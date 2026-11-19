@@ -4,7 +4,9 @@
 //! handshake, the hole that is punched through the NAT, and the capture /
 //! encode / input sides of a session.
 
+pub mod capture;
 pub mod crypto;
+pub mod encode;
 pub mod hole;
 pub mod protocol;
 pub mod transport;

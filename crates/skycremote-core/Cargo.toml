@@ -31,9 +31,34 @@ arc-swap.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
 time.workspace = true
+
+# Screen capture.  xcap owns the pixels; display-info is the second opinion
+# on a screen's name, size and scale when xcap cannot answer.
+xcap.workspace = true
+display-info.workspace = true
+
+# The default H.264 encoder.  Cisco's OpenH264 is compiled from the C source
+# vendored in the crate, so it needs a C compiler but no system libraries,
+# which is what lets a plain `cargo build` work on any machine.
+openh264 = "0.9"
+
+# The libx264 backend.  Optional because ffmpeg-next resolves the system's
+# ffmpeg through pkg-config at build time, which not every machine can do;
+# enable the `ffmpeg` feature to compile it.
+ffmpeg-next = { workspace = true, optional = true }
 rcgen = "0.14.10"
 quinn.workspace = true
 rustls.workspace = true
+
+[features]
+# Off by default so that `cargo build` never depends on a local ffmpeg
+# installation.  Turn it on to get `Encoder::with_libx264`.
+#
+# Building with this feature needs ffmpeg's .pc files on pkg-config's search
+# path, e.g. on macOS with Homebrew:
+#   PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig" \
+#     cargo build -p skycremote-core --features ffmpeg
+ffmpeg = ["dep:ffmpeg-next"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
