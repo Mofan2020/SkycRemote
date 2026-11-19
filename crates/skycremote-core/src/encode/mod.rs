@@ -512,6 +512,11 @@ mod software {
                 // which is what a desktop actually looks like.
                 .usage_type(UsageType::ScreenContentRealTime)
                 .rate_control_mode(RateControlMode::Bitrate)
+                // OpenH264 turns these two off by itself for screen
+                // content and logs a warning each time; saying so here
+                // keeps the session log clean.
+                .adaptive_quantization(false)
+                .background_detection(false)
                 .intra_frame_period(IntraFramePeriod::from_num_frames(
                     config.keyframe_interval,
                 ));

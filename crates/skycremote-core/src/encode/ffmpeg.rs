@@ -30,6 +30,12 @@
 
 pub use super::HardwareEncoder;
 
+// The module that holds this file is also called `ffmpeg`, which would
+// shadow the crate's own path; the alias keeps `ffmpeg::...` meaning the
+// crate everywhere below.
+#[cfg(feature = "ffmpeg")]
+use ffmpeg_next as ffmpeg;
+
 /// Builds the error for a hardware encoder that is not written yet.
 ///
 /// Kept as three separate cfg branches rather than one `match` so that
