@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>SkycRemote</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===================================================================
+     Application shell.  Two views live side by side; only one is
+     visible at a time.  Every piece of chrome is a direct child of
+     #app so that the CSS can lay them out without extra wrappers.
+     =================================================================== -->
+<div id="app" class="app" data-view="connect">
+
+  <!-- ======================= CONNECT VIEW ======================= -->
+  <section id="view-connect" class="view view-connect is-active" aria-label="Connect">
+
+    <header class="topbar" id="topbar">
+      <div class="topbar-left">
+        <div class="brand" id="brand">
+          <span class="brand-mark" id="brand-mark" data-icon="zap" aria-hidden="true"></span>
+          <span class="brand-text">
+            <span class="brand-name" data-i18n="app.name">SkycRemote</span>
+            <span class="brand-sub" data-i18n="app.tagline">Peer-to-peer remote desktop</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <!-- language -->
+        <div class="menu-wrap">
+          <button id="toolbar-lang" class="icon-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                  data-i18n-title="topbar.language" title="Interface language">
+            <span class="icon" data-icon="globe"></span>
+            <span class="icon-btn-label" id="lang-label">中</span>
+          </button>
+          <div id="lang-menu" class="menu menu-glass" role="menu" hidden>
+            <button class="menu-item" type="button" role="menuitem" data-locale="zh">简体中文</button>
+            <button class="menu-item" type="button" role="menuitem" data-locale="en">English</button>
+          </div>
+        </div>
+
+        <!-- theme -->
+        <div class="menu-wrap">
+          <button id="toolbar-theme" class="icon-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                  data-i18n-title="topbar.theme" title="Switch theme">
+            <span class="icon" id="theme-icon" data-icon="sun"></span>
+          </button>
+          <div id="theme-menu" class="menu menu-glass" role="menu" hidden>
+            <button class="menu-item" type="button" role="menuitem" data-theme-choice="system">
+              <span class="icon" data-icon="monitor"></span><span data-i18n="topbar.theme.system">Match system</span>
+            </button>
+            <button class="menu-item" type="button" role="menuitem" data-theme-choice="light">
+              <span class="icon" data-icon="sun"></span><span data-i18n="topbar.theme.light">Light</span>
+            </button>
+            <button class="menu-item" type="button" role="menuitem" data-theme-choice="dark">
+              <span class="icon" data-icon="moon"></span><span data-i18n="topbar.theme.dark">Dark</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- settings -->
+        <button id="toolbar-settings" class="icon-btn" type="button"
+                data-i18n-title="topbar.settings" title="Settings">
+          <span class="icon" data-icon="settings"></span>
+        </button>
+      </div>
+    </header>
+
+    <main class="connect-main" id="connect-main">
+
+      <!-- hero: id entry -->
+      <div class="hero">
+        <h1 class="hero-title" data-i18n="connect.title">Connect to a remote device</h1>
+        <p class="hero-sub" data-i18n="connect.subtitle">Enter a device ID, or pick a device from the list below</p>
+
+        <form id="connect-form" class="connect-form" autocomplete="off">
+          <div class="id-field" id="id-field">
+            <span class="id-field-icon icon" data-icon="link"></span>
+            <input id="device-id-input" class="id-field-input" type="text" inputmode="latin"
+                   spellcheck="false" autocapitalize="off" autocorrect="off"
+                   placeholder="Device ID" data-i18n-placeholder="connect.placeholder"
+                   aria-label="Device ID">
+            <button id="id-field-clear" class="id-field-clear" type="button" hidden>
+              <span class="icon" data-icon="x"></span>
+            </button>
+          </div>
+          <button id="connect-btn" class="btn btn-primary btn-lg" type="submit">
+            <span class="icon" data-icon="play"></span>
+            <span id="connect-btn-label" data-i18n="connect.button">Connect</span>
+          </button>
+        </form>
+
+        <p class="hero-hint" id="connect-hint" data-i18n="connect.hint">The device ID is shown on the controlled device's home screen</p>
+      </div>
+
+      <!-- device list -->
+      <section class="devices" id="devices-section">
+        <div class="devices-head">
+          <div class="segmented" id="device-tabs" role="tablist">
+            <button class="seg is-active" type="button" role="tab" data-tab="recent" data-i18n="connect.tab.recent">Recent</button>
+            <button class="seg" type="button" role="tab" data-tab="favorite" data-i18n="connect.tab.favorite">Favorites</button>
+            <button class="seg" type="button" role="tab" data-tab="online" data-i18n="connect.tab.online">Online</button>
+          </div>
+
+          <div class="devices-tools">
+            <div class="search-field" id="device-search-wrap">
+              <span class="icon" data-icon="search"></span>
+              <input id="device-search" class="search-input" type="search" spellcheck="false"
+                     placeholder="Search devices" data-i18n-placeholder="connect.search" aria-label="Search devices">
+            </div>
+            <button id="device-refresh" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.refresh" title="Refresh">
+              <span class="icon" data-icon="refresh"></span>
+            </button>
+          </div>
+        </div>
+
+        <div id="device-list" class="device-list" role="list"></div>
+
+        <div id="device-empty" class="empty-state" hidden>
+          <span class="icon empty-icon" id="device-empty-icon" data-icon="server"></span>
+          <p class="empty-title" id="device-empty-title" data-i18n="connect.empty.recent">No devices connected yet</p>
+          <p class="empty-hint" id="device-empty-hint" data-i18n="connect.empty.hint">Devices you connect to will show up here</p>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span id="footer-version">SkycRemote 0.1.0</span>
+        <span class="footer-sep"></span>
+        <span id="footer-license">MIT</span>
+        <span class="footer-sep"></span>
+        <span id="footer-mock" class="footer-mock" data-i18n="toast.mockNotice">Demo mode</span>
+      </footer>
+    </main>
+  </section>
+
+  <!-- ======================= REMOTE VIEW ======================= -->
+  <section id="view-remote" class="view view-remote" aria-label="Remote session">
+
+    <!-- video stage -->
+    <div id="remote-stage" class="stage" tabindex="0">
+      <canvas id="remote-canvas" class="stage-canvas" width="1920" height="1080"></canvas>
+      <div id="stage-placeholder" class="stage-placeholder">
+        <span class="icon" data-icon="monitor"></span>
+        <p data-i18n="status.idle">Not connected</p>
+      </div>
+      <div id="privacy-shield" class="privacy-shield" hidden>
+        <span class="icon" data-icon="eye-off"></span>
+        <p data-i18n="privacy.screen.on">Privacy screen on</p>
+      </div>
+    </div>
+
+    <!-- connection status banner -->
+    <div id="status-banner" class="status-banner" hidden>
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text" class="status-text"></span>
+      <div class="status-progress" id="status-progress"><i></i></div>
+    </div>
+
+    <!-- floating toolbar -->
+    <div id="remote-toolbar" class="toolbar glass" role="toolbar" aria-label="Remote toolbar">
+
+      <div class="toolbar-group toolbar-stats">
+        <div class="stat" title="Quality">
+          <span class="icon" data-icon="sliders"></span>
+          <span id="status-quality" class="stat-value">Auto</span>
+        </div>
+        <div class="stat" title="Frame rate">
+          <span class="icon" data-icon="gauge"></span>
+          <span id="status-framerate" class="stat-value">60 FPS</span>
+        </div>
+        <div class="stat" title="Bitrate">
+          <span class="icon" data-icon="activity"></span>
+          <span id="status-bitrate" class="stat-value">-- Mbps</span>
+        </div>
+        <div class="stat" title="Latency">
+          <span class="icon" data-icon="wifi"></span>
+          <span id="status-latency" class="stat-value">-- ms</span>
+        </div>
+        <div class="stat stat-res" title="Resolution">
+          <span class="icon" data-icon="display"></span>
+          <span id="status-resolution" class="stat-value">1920×1080</span>
+        </div>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group toolbar-actions">
+        <button id="toolbar-toggle" class="tb-btn" type="button" data-i18n-title="remote.toolbar.hide" title="Hide toolbar">
+          <span class="icon" data-icon="chevron-up"></span>
+        </button>
+
+        <!-- multi screen -->
+        <div class="menu-wrap">
+          <button id="screen-btn" class="tb-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                  data-i18n-title="remote.toolbar.screens" title="Screens">
+            <span class="icon" data-icon="grid"></span>
+            <span class="tb-label" data-i18n="remote.toolbar.screens">Screens</span>
+            <span class="icon icon-xs" data-icon="chevron-down"></span>
+          </button>
+          <div id="screen-menu" class="menu menu-glass menu-wide" role="menu" hidden></div>
+        </div>
+
+        <!-- virtual screen -->
+        <button id="virtual-screen-btn" class="tb-btn" type="button" aria-pressed="false"
+                data-i18n-title="screen.virtual.title" title="Virtual screen">
+          <span class="icon" data-icon="layers"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.virtual">Virtual</span>
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <button id="btn-file" class="tb-btn" type="button" data-i18n-title="remote.toolbar.files" title="Files">
+          <span class="icon" data-icon="folder"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.files">Files</span>
+        </button>
+
+        <button id="btn-terminal" class="tb-btn" type="button" data-i18n-title="remote.toolbar.terminal" title="Terminal">
+          <span class="icon" data-icon="terminal"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.terminal">Terminal</span>
+        </button>
+
+        <button id="btn-keymap" class="tb-btn" type="button" data-i18n-title="remote.toolbar.keymap" title="Mapping">
+          <span class="icon" data-icon="keyboard"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.keymap">Mapping</span>
+        </button>
+
+        <button id="btn-cloud-keyboard" class="tb-btn" type="button" data-i18n-title="remote.toolbar.cloudKeyboard" title="Cloud keyboard">
+          <span class="icon" data-icon="type"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.cloudKeyboard">Cloud keyboard</span>
+        </button>
+
+        <button id="btn-gamepad" class="tb-btn" type="button" data-i18n-title="remote.toolbar.gamepad" title="Gamepad">
+          <span class="icon" data-icon="gamepad"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.gamepad">Gamepad</span>
+        </button>
+
+        <button id="btn-privacy" class="tb-btn" type="button" aria-pressed="false"
+                data-i18n-title="remote.toolbar.privacy" title="Privacy screen">
+          <span class="icon" data-icon="eye-off"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.privacy">Privacy screen</span>
+        </button>
+
+        <div class="toolbar-sep"></div>
+
+        <!-- cursor style -->
+        <div class="menu-wrap">
+          <button id="cursor-btn" class="tb-btn tb-btn-icon" type="button" aria-haspopup="true" aria-expanded="false"
+                  data-i18n-title="remote.toolbar.cursor" title="Cursor">
+            <span class="icon" id="cursor-icon" data-icon="mouse-pointer"></span>
+          </button>
+          <div id="cursor-menu" class="menu menu-glass" role="menu" hidden>
+            <button class="menu-item" type="button" data-cursor="default"><span class="icon" data-icon="mouse-pointer"></span><span data-i18n="remote.cursor.default">Default arrow</span></button>
+            <button class="menu-item" type="button" data-cursor="pointer"><span class="icon" data-icon="hand"></span><span data-i18n="remote.cursor.pointer">Pointer</span></button>
+            <button class="menu-item" type="button" data-cursor="crosshair"><span class="icon" data-icon="crosshair"></span><span data-i18n="remote.cursor.crosshair">Crosshair</span></button>
+            <button class="menu-item" type="button" data-cursor="text"><span class="icon" data-icon="cursor-text"></span><span data-i18n="remote.cursor.text">Text</span></button>
+            <button class="menu-item" type="button" data-cursor="none"><span class="icon" data-icon="eye-off"></span><span data-i18n="remote.cursor.hide">Hide cursor</span></button>
+          </div>
+        </div>
+
+        <button id="fullscreen-btn" class="tb-btn tb-btn-icon" type="button" data-i18n-title="remote.toolbar.fullscreen" title="Fullscreen">
+          <span class="icon" data-icon="maximize"></span>
+        </button>
+
+        <!-- power -->
+        <div class="menu-wrap">
+          <button id="btn-power" class="tb-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                  data-i18n-title="remote.toolbar.power" title="Power">
+            <span class="icon" data-icon="power"></span>
+          </button>
+          <div id="power-menu" class="menu menu-glass" role="menu" hidden>
+            <button class="menu-item" type="button" data-power="shutdown"><span class="icon" data-icon="power"></span><span data-i18n="power.shutdown">Shut down</span></button>
+            <button class="menu-item" type="button" data-power="restart"><span class="icon" data-icon="rotate"></span><span data-i18n="power.restart">Restart</span></button>
+            <button class="menu-item" type="button" data-power="sleep"><span class="icon" data-icon="moon"></span><span data-i18n="power.sleep">Sleep</span></button>
+            <button class="menu-item" type="button" data-power="logoff"><span class="icon" data-icon="log-out"></span><span data-i18n="power.logoff">Log off</span></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The disconnect button sits on its own so that it is never
+           pushed out of sight when the window is narrow. -->
+      <div class="toolbar-group toolbar-end">
+        <button id="btn-disconnect" class="tb-btn tb-btn-danger" type="button" data-i18n-title="remote.toolbar.disconnect" title="Disconnect">
+          <span class="icon" data-icon="link"></span>
+          <span class="tb-label" data-i18n="remote.toolbar.disconnect">Disconnect</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- right-click menu, styled like the Windows shell menu -->
+    <div id="context-menu" class="ctx-menu" role="menu" hidden></div>
+
+    <!-- ============ FILE TRANSFER DRAWER ============ -->
+    <aside id="file-drawer" class="drawer drawer-right" aria-label="File transfer" hidden>
+      <header class="drawer-head">
+        <h2 class="drawer-title"><span class="icon" data-icon="folder"></span><span data-i18n="files.title">File transfer</span></h2>
+        <div class="drawer-head-actions">
+          <button id="file-refresh" class="icon-btn icon-btn-sm" type="button" data-i18n-title="files.refresh" title="Refresh">
+            <span class="icon" data-icon="refresh"></span>
+          </button>
+          <button id="file-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+            <span class="icon" data-icon="x"></span>
+          </button>
+        </div>
+      </header>
+
+      <div class="drawer-path">
+        <button id="file-up" class="icon-btn icon-btn-sm" type="button" data-i18n-title="files.path" title="Path">
+          <span class="icon" data-icon="arrow-up"></span>
+        </button>
+        <span id="file-path" class="path-text">/</span>
+      </div>
+
+      <div id="file-list" class="file-list"></div>
+
+      <div id="file-dropzone" class="dropzone">
+        <span class="icon" data-icon="upload"></span>
+        <p class="dropzone-title" data-i18n="files.dropzone">Drop files here to upload</p>
+        <p class="dropzone-hint" data-i18n="files.dropzone.hint">Or use the upload button to pick files</p>
+        <button id="file-upload-btn" class="btn btn-secondary btn-sm" type="button">
+          <span class="icon" data-icon="upload"></span><span data-i18n="files.upload">Upload file</span>
+        </button>
+        <input id="file-input" type="file" multiple hidden>
+      </div>
+
+      <section class="queue">
+        <h3 class="queue-title" data-i18n="files.queue">Transfer queue</h3>
+        <div id="file-queue" class="queue-list"></div>
+        <p id="queue-empty" class="queue-empty" data-i18n="files.queue.empty">No transfers in flight</p>
+      </section>
+    </aside>
+
+    <!-- ============ TERMINAL PANEL ============ -->
+    <section id="terminal-panel" class="terminal" aria-label="Terminal" hidden>
+      <header class="terminal-head">
+        <h2 class="terminal-title"><span class="icon" data-icon="terminal"></span><span data-i18n="terminal.title">Terminal</span>
+          <span id="terminal-state" class="terminal-state"></span>
+        </h2>
+        <div class="terminal-actions">
+          <button id="terminal-copy" class="icon-btn icon-btn-sm" type="button" data-i18n-title="terminal.copy" title="Copy all">
+            <span class="icon" data-icon="copy"></span>
+          </button>
+          <button id="terminal-clear" class="icon-btn icon-btn-sm" type="button" data-i18n-title="terminal.clear" title="Clear">
+            <span class="icon" data-icon="trash"></span>
+          </button>
+          <button id="terminal-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="terminal.close" title="Close">
+            <span class="icon" data-icon="x"></span>
+          </button>
+        </div>
+      </header>
+      <div id="terminal-output" class="terminal-output" role="log"></div>
+      <div class="terminal-input-row">
+        <span id="terminal-prompt" class="terminal-prompt">remote&gt;</span>
+        <input id="terminal-input" class="terminal-input" type="text" spellcheck="false" autocomplete="off"
+               placeholder="Type a command and press Enter" data-i18n-placeholder="terminal.placeholder">
+        <button id="terminal-send" class="btn btn-secondary btn-sm" type="button">
+          <span class="icon" data-icon="arrow-right"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ============ CLOUD KEYBOARD ============ -->
+    <div id="cloud-keyboard" class="overlay-panel" hidden>
+      <header class="overlay-head">
+        <h2><span class="icon" data-icon="type"></span><span data-i18n="cloud.title">Cloud keyboard</span></h2>
+        <button id="cloud-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+          <span class="icon" data-icon="x"></span>
+        </button>
+      </header>
+      <p class="overlay-hint" data-i18n="cloud.hint">Click a key to send it, or type text directly</p>
+      <div class="cloud-text-row">
+        <input id="cloud-text" type="text" spellcheck="false"
+               placeholder="Type text and press Enter" data-i18n-placeholder="cloud.textPlaceholder">
+        <button id="cloud-send" class="btn btn-secondary btn-sm" type="button" data-i18n="cloud.send">Send</button>
+      </div>
+      <div id="cloud-keys" class="cloud-keys"></div>
+    </div>
+
+    <!-- ============ GAMEPAD PANEL ============ -->
+    <div id="gamepad-panel" class="overlay-panel" hidden>
+      <header class="overlay-head">
+        <h2><span class="icon" data-icon="gamepad"></span><span data-i18n="gamepad.title">Gamepad</span></h2>
+        <button id="gamepad-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+          <span class="icon" data-icon="x"></span>
+        </button>
+      </header>
+      <p class="overlay-hint" data-i18n="gamepad.hint">The browser maps a local gamepad onto remote input</p>
+      <div id="gamepad-list" class="gamepad-list"></div>
+      <label class="row-check">
+        <input id="gamepad-enabled" type="checkbox" checked>
+        <span data-i18n="gamepad.enable">Enable gamepad mapping</span>
+      </label>
+    </div>
+  </section>
+
+  <!-- ======================= SETTINGS PANEL ======================= -->
+  <aside id="settings-panel" class="drawer drawer-right drawer-wide" aria-label="Settings" hidden>
+    <header class="drawer-head">
+      <h2 class="drawer-title"><span class="icon" data-icon="settings"></span><span data-i18n="settings.title">Settings</span></h2>
+      <button id="settings-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+        <span class="icon" data-icon="x"></span>
+      </button>
+    </header>
+
+    <div class="settings-scroll" id="settings-scroll">
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.display">Display &amp; quality</h3>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="quality-select" data-i18n="settings.group.quality">Quality preset</label>
+          <select id="quality-select" class="select">
+            <option value="auto" data-i18n="settings.quality.auto">Auto</option>
+            <option value="4k" data-i18n="settings.quality.4k">4K</option>
+            <option value="fps144" data-i18n="settings.quality.fps144">144 fps</option>
+            <option value="1080p60" data-i18n="settings.quality.1080p60">1080p60</option>
+            <option value="1080p" data-i18n="settings.quality.1080p">1080p</option>
+          </select>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <div class="set-label-row">
+            <label class="set-label" for="bitrate-slider" data-i18n="settings.group.bitrate">Bitrate</label>
+            <output id="bitrate-value" class="set-value">50 Mbps</output>
+          </div>
+          <input id="bitrate-slider" class="slider" type="range" min="2" max="500" step="1" value="50">
+          <p class="set-hint" data-i18n="settings.group.bitrate.hint">Range 2 - 500 Mbps</p>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <div class="set-label-row">
+            <label class="set-label" for="framerate-slider" data-i18n="settings.group.framerate">Frame rate</label>
+            <output id="framerate-value" class="set-value">60 FPS</output>
+          </div>
+          <input id="framerate-slider" class="slider" type="range" min="15" max="240" step="1" value="60">
+          <p class="set-hint" data-i18n="settings.group.framerate.hint">Frames sent per second</p>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="encoder-select" data-i18n="settings.group.encoder">Encoder</label>
+          <select id="encoder-select" class="select">
+            <option value="auto" data-i18n="settings.encoder.auto">Auto</option>
+            <option value="h264-hw" data-i18n="settings.encoder.h264hw">H.264 hardware</option>
+            <option value="h264-sw" data-i18n="settings.encoder.h264sw">H.264 software</option>
+          </select>
+          <p class="set-hint" data-i18n="settings.group.encoder.hint">Hardware is cheaper on CPU</p>
+        </div>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.audio">Audio</h3>
+        <label class="row-check">
+          <input id="audio-enabled" type="checkbox" checked>
+          <span data-i18n="settings.group.audioEnable">Stream remote audio</span>
+        </label>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="audio-quality" data-i18n="settings.group.audioQuality">Audio quality</label>
+          <select id="audio-quality" class="select">
+            <option value="low" data-i18n="settings.group.audio.low">Low</option>
+            <option value="medium" data-i18n="settings.group.audio.medium">Medium</option>
+            <option value="high" data-i18n="settings.group.audio.high">High</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.input">Input &amp; peripherals</h3>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="keymap-select" data-i18n="settings.group.keymap">Keyboard mapping</label>
+          <div class="inline-field">
+            <select id="keymap-select" class="select">
+              <option value="default" data-i18n="settings.keymap.default">Default</option>
+              <option value="gaming" data-i18n="settings.keymap.gaming">Gaming</option>
+              <option value="custom" data-i18n="settings.keymap.custom">Custom scheme</option>
+            </select>
+            <button id="keymap-edit-btn" class="btn btn-secondary btn-sm" type="button">
+              <span class="icon" data-icon="edit"></span><span data-i18n="settings.group.keymap.edit">Edit mapping</span>
+            </button>
+          </div>
+        </div>
+        <label class="row-check">
+          <input id="gamepad-enabled-setting" type="checkbox" checked>
+          <span data-i18n="settings.group.gamepad">Gamepad support</span>
+        </label>
+        <p class="set-hint" data-i18n="settings.group.gamepad.hint">Map a connected gamepad automatically</p>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.privacy">Privacy &amp; security</h3>
+        <label class="row-check">
+          <input id="privacy-blackout" type="checkbox" checked>
+          <span data-i18n="privacy.blackout">Shoulder-surfing blackout</span>
+        </label>
+        <p class="set-hint" data-i18n="privacy.blackout.hint">Black out the screen while being controlled</p>
+
+        <label class="row-check">
+          <input id="privacy-autolock" type="checkbox">
+          <span data-i18n="privacy.autolock">Lock screen after disconnecting</span>
+        </label>
+        <p class="set-hint" data-i18n="privacy.autolock.hint">Lock the controlled device once the session ends</p>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="screensaver-select" data-i18n="privacy.screensaver">Custom screensaver</label>
+          <select id="screensaver-select" class="select">
+            <option value="none" data-i18n="privacy.screensaver.none">Do nothing</option>
+            <option value="blank" data-i18n="privacy.screensaver.blank">Blank the screen</option>
+            <option value="lock" data-i18n="privacy.screensaver.lock">Lock the screen</option>
+            <option value="sleep" data-i18n="privacy.screensaver.sleep">Sleep the machine</option>
+          </select>
+        </div>
+
+        <label class="row-check">
+          <input id="privacy-screen-toggle" type="checkbox">
+          <span data-i18n="privacy.screen.hint">Hide what the controlled device is showing</span>
+        </label>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.files">File transfer</h3>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="file-dir-input" data-i18n="files.dir">Default download folder</label>
+          <div class="inline-field">
+            <input id="file-dir-input" class="input" type="text" spellcheck="false">
+            <button id="file-browse-btn" class="btn btn-secondary btn-sm" type="button" data-i18n="files.browse">Browse</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.terminal">Terminal &amp; port mapping</h3>
+        <label class="row-check">
+          <input id="terminal-enabled" type="checkbox" checked>
+          <span data-i18n="settings.group.terminalEnable">Allow opening a terminal remotely</span>
+        </label>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="terminal-shell" data-i18n="terminal.title">Terminal</label>
+          <select id="terminal-shell" class="select">
+            <option value="default" data-i18n="common.default">Default</option>
+            <option value="powershell" data-i18n="settings.group.encoder">PowerShell</option>
+            <option value="cmd">cmd</option>
+            <option value="bash">bash</option>
+            <option value="zsh">zsh</option>
+          </select>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <div class="set-label-row">
+            <span class="set-label" data-i18n="settings.group.ports">Port mapping</span>
+            <button id="port-add-btn" class="btn btn-secondary btn-sm" type="button">
+              <span class="icon" data-icon="plus"></span><span data-i18n="settings.group.ports.add">Add mapping</span>
+            </button>
+          </div>
+          <p class="set-hint" data-i18n="settings.group.ports.hint">Forward a local port to the remote machine</p>
+          <div id="port-list" class="port-list"></div>
+          <p id="port-empty" class="set-hint" data-i18n="settings.group.ports.empty">No port mappings yet</p>
+        </div>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.general">General</h3>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-language" data-i18n="settings.group.language">Interface language</label>
+          <select id="settings-language" class="select">
+            <option value="zh" data-i18n="settings.language.zh">简体中文</option>
+            <option value="en" data-i18n="settings.language.en">English</option>
+          </select>
+        </div>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-theme" data-i18n="settings.group.theme">Theme</label>
+          <select id="settings-theme" class="select">
+            <option value="system" data-i18n="settings.theme.system">Match system</option>
+            <option value="light" data-i18n="settings.theme.light">Light</option>
+            <option value="dark" data-i18n="settings.theme.dark">Dark</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.about">About</h3>
+        <div class="set-row"><span class="set-label" data-i18n="settings.about.version">Version</span><span class="set-value">0.1.0</span></div>
+        <div class="set-row"><span class="set-label" data-i18n="settings.about.protocol">Protocol version</span><span class="set-value">1</span></div>
+        <div class="set-row"><span class="set-label" data-i18n="settings.about.license">License</span><span class="set-value" data-i18n="settings.about.licenseValue">MIT</span></div>
+      </section>
+    </div>
+
+    <footer class="drawer-foot">
+      <button id="settings-reset-btn" class="btn btn-ghost" type="button">
+        <span class="icon" data-icon="rotate"></span><span data-i18n="common.reset">Reset</span>
+      </button>
+      <button id="settings-save-btn" class="btn btn-primary" type="button">
+        <span class="icon" data-icon="check"></span><span data-i18n="common.save">Save</span>
+      </button>
+    </footer>
+  </aside>
+
+  <!-- ======================= KEYMAP EDITOR ======================= -->
+  <div id="keymap-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2><span class="icon" data-icon="keyboard"></span><span data-i18n="keymap.title">Key mapping</span></h2>
+        <button id="keymap-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+          <span class="icon" data-icon="x"></span>
+        </button>
+      </header>
+      <p class="modal-hint" data-i18n="keymap.hint">Left is the key on this machine, right is the key sent out</p>
+      <div id="keymap-rows" class="keymap-rows"></div>
+      <footer class="modal-foot">
+        <button id="keymap-add-btn" class="btn btn-ghost" type="button">
+          <span class="icon" data-icon="plus"></span><span data-i18n="keymap.addRow">Add mapping</span>
+        </button>
+        <div class="modal-foot-right">
+          <button id="keymap-reset-btn" class="btn btn-ghost" type="button" data-i18n="keymap.reset">Restore defaults</button>
+          <button id="keymap-save-btn" class="btn btn-primary" type="button" data-i18n="common.save">Save</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ======================= CONFIRM DIALOG ======================= -->
+  <div id="confirm-modal" class="modal" hidden>
+    <div class="modal-card modal-card-sm" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2 id="confirm-title" data-i18n="common.confirm">Confirm</h2>
+      </header>
+      <p id="confirm-message" class="modal-body"></p>
+      <footer class="modal-foot">
+        <div class="modal-foot-right">
+          <button id="confirm-cancel" class="btn btn-ghost" type="button" data-i18n="common.cancel">Cancel</button>
+          <button id="confirm-ok" class="btn btn-primary" type="button" data-i18n="common.confirm">Confirm</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ======================= TOASTS ======================= -->
+  <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
+
+  <!-- ======================= SCREENSHOT / RECONNECT OVERLAY ======================= -->
+  <div id="reconnect-overlay" class="reconnect-overlay" hidden>
+    <div class="reconnect-card glass">
+      <span class="spinner"></span>
+      <p id="reconnect-text" data-i18n="status.reconnecting">Reconnecting...</p>
+      <div class="reconnect-bar"><i id="reconnect-bar-fill"></i></div>
+    </div>
+  </div>
+
+  <input id="hidden-file-input" type="file" multiple hidden>
+</div>
+
+<script src="i18n.js"></script>
+<script src="components/icons.js"></script>
+<script src="components/bridge.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

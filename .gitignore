@@ -1,0 +1,14 @@
+# Build output
+/target
+**/target/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local data
+*.log
+/data/
+/tmp/

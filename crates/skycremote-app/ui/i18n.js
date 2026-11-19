@@ -1,0 +1,742 @@
+/*!
+ * SkycRemote UI — i18n
+ *
+ * Flat key/value tables for 中文 and English.
+ * Lookup is a single flat `TABLE[lang][key]` read — there is no nested
+ * path resolution, so a key can never fall through to a different level
+ * than the one it was written on.
+ *
+ * Keys are written `section.key`. Dots inside a key are part of the key
+ * name, not a path separator.
+ *
+ * Loaded as a classic script (not an ES module) so that it works from a
+ * `file://` URL inside WKWebView / WebView2 / WebKitGTK without CORS
+ * problems. Everything hangs off `window.SkycUI.i18n`.
+ */
+(function (global) {
+  'use strict';
+
+  var NS = (global.SkycUI = global.SkycUI || {});
+
+  var TABLE = {
+    zh: {
+      /* ---------- 应用 ---------- */
+      'app.name': 'SkycRemote',
+      'app.tagline': '点对点远程桌面',
+
+      /* ---------- 通用 ---------- */
+      'common.cancel': '取消',
+      'common.confirm': '确定',
+      'common.close': '关闭',
+      'common.save': '保存',
+      'common.saved': '已保存',
+      'common.reset': '重置',
+      'common.enable': '开启',
+      'common.disable': '关闭',
+      'common.none': '无',
+      'common.auto': '自动',
+      'common.unknown': '未知',
+      'common.more': '更多',
+      'common.copy': '复制',
+      'common.copied': '已复制到剪贴板',
+      'common.refresh': '刷新',
+      'common.bytes': 'B',
+      'common.kb': 'KB',
+      'common.mb': 'MB',
+      'common.gb': 'GB',
+      'common.left': '剩余',
+      'common.speed': '速度',
+      'common.eta': '剩余时间',
+      'common.canceled': '已取消',
+      'common.failed': '失败',
+      'common.done': '完成',
+      'common.pending': '等待中',
+      'common.running': '进行中',
+      'common.add': '添加',
+      'common.remove': '移除',
+      'common.edit': '编辑',
+      'common.default': '默认',
+
+      /* ---------- 顶栏 ---------- */
+      'topbar.language': '界面语言',
+      'topbar.theme': '切换主题',
+      'topbar.theme.system': '跟随系统',
+      'topbar.theme.light': '浅色',
+      'topbar.theme.dark': '深色',
+      'topbar.settings': '设置',
+
+      /* ---------- 连接页 ---------- */
+      'connect.title': '连接到远程设备',
+      'connect.subtitle': '输入对方的设备 ID，或从下方列表中选择一台设备',
+      'connect.placeholder': '设备 ID',
+      'connect.button': '连接',
+      'connect.connecting': '连接中…',
+      'connect.hint': '设备 ID 显示在被控端的应用首页',
+      'connect.error.empty': '请输入设备 ID',
+      'connect.error.invalid': '设备 ID 格式不正确',
+      'connect.error.offline': '该设备当前不在线',
+      'connect.error.refused': '对方拒绝了这次连接',
+      'connect.error.timeout': '连接超时，请稍后重试',
+      'connect.error.busy': '已经在连接中',
+      'connect.tab.recent': '最近连接',
+      'connect.tab.favorite': '收藏设备',
+      'connect.tab.online': '在线设备',
+      'connect.empty.recent': '还没有连接过的设备',
+      'connect.empty.favorite': '还没有收藏的设备',
+      'connect.empty.online': '当前没有在线的设备',
+      'connect.empty.hint': '连接成功后会出现在这里',
+      'connect.device.online': '在线',
+      'connect.device.offline': '离线',
+      'connect.device.latency': '{ms} ms',
+      'connect.device.lastSeen': '上次连接 {time}',
+      'connect.device.connect': '连接',
+      'connect.device.favorite': '收藏',
+      'connect.device.unfavorite': '取消收藏',
+      'connect.device.remove': '移除记录',
+      'connect.device.missing': '设备不存在',
+      'connect.search': '搜索设备',
+      'connect.search.empty': '没有匹配的设备',
+
+      /* ---------- 远程工具栏 ---------- */
+      'remote.toolbar.show': '显示工具栏',
+      'remote.toolbar.hide': '隐藏工具栏',
+      'remote.toolbar.quality': '画质',
+      'remote.toolbar.framerate': '帧率',
+      'remote.toolbar.bitrate': '码率',
+      'remote.toolbar.screens': '屏幕',
+      'remote.toolbar.virtual': '虚拟屏',
+      'remote.toolbar.files': '文件',
+      'remote.toolbar.terminal': '终端',
+      'remote.toolbar.keymap': '映射',
+      'remote.toolbar.cloudKeyboard': '云键盘',
+      'remote.toolbar.gamepad': '手柄',
+      'remote.toolbar.privacy': '隐私屏',
+      'remote.toolbar.power': '电源',
+      'remote.toolbar.disconnect': '断开',
+      'remote.toolbar.cursor': '鼠标样式',
+      'remote.toolbar.fullscreen': '全屏',
+      'remote.toolbar.exitFullscreen': '退出全屏',
+      'remote.toolbar.more': '更多工具',
+      'remote.cursor.default': '默认箭头',
+      'remote.cursor.pointer': '手型',
+      'remote.cursor.crosshair': '十字',
+      'remote.cursor.text': '文本',
+      'remote.cursor.hide': '隐藏光标',
+
+      /* ---------- 状态 ---------- */
+      'status.idle': '未连接',
+      'status.punching': '正在打洞…',
+      'status.handshaking': '正在握手…',
+      'status.connected': '已连接',
+      'status.reconnecting': '掉线重连中…',
+      'status.closed': '已断开',
+      'status.failed': '连接失败',
+      'status.latency': '延迟 {ms} ms',
+      'status.bitrate': '{mbps} Mbps',
+      'status.framerate': '{fps} FPS',
+      'status.resolution': '{w}×{h}',
+      'status.quality.auto': '自动',
+      'status.quality.4k': '4K',
+      'status.quality.fps144': '144 帧',
+      'status.quality.1080p60': '1080p60',
+      'status.quality.1080p': '1080p',
+
+      /* ---------- 屏幕 ---------- */
+      'screen.title': '选择屏幕',
+      'screen.primary': '主屏',
+      'screen.empty': '没有其他屏幕',
+      'screen.virtual.title': '虚拟屏',
+      'screen.virtual.hint': '创建一个额外的虚拟显示器，用来放置独立窗口',
+      'screen.virtual.create': '创建虚拟屏',
+      'screen.virtual.remove': '移除虚拟屏',
+      'screen.virtual.active': '使用中',
+
+      /* ---------- 右键菜单 ---------- */
+      'ctx.view': '查看',
+      'ctx.sortBy': '排序方式',
+      'ctx.refresh': '刷新',
+      'ctx.paste': '粘贴',
+      'ctx.newFolder': '新建文件夹',
+      'ctx.properties': '属性',
+      'ctx.displaySettings': '显示设置',
+      'ctx.personalize': '个性化',
+      'ctx.taskManager': '任务管理器',
+      'ctx.openTerminal': '在此处打开终端',
+      'ctx.run': '运行',
+      'ctx.separator': '分隔',
+
+      /* ---------- 文件传输 ---------- */
+      'files.title': '文件传输',
+      'files.path': '路径',
+      'files.up': '上传',
+      'files.upload': '上传文件',
+      'files.download': '下载',
+      'files.refresh': '刷新',
+      'files.empty': '这个文件夹是空的',
+      'files.dropzone': '把文件拖到这里即可上传',
+      'files.dropzone.hint': '也可以点击上传按钮选择文件',
+      'files.queue': '传输队列',
+      'files.queue.empty': '没有进行中的传输',
+      'files.item.uploading': '上传中',
+      'files.item.downloading': '下载中',
+      'files.item.done': '已完成',
+      'files.item.failed': '失败',
+      'files.item.canceled': '已取消',
+      'files.size': '大小',
+      'files.modified': '修改时间',
+      'files.folder': '文件夹',
+      'files.file': '文件',
+      'files.dir': '默认下载目录',
+      'files.browse': '浏览…',
+      'files.error.read': '读取目录失败',
+      'files.error.download': '下载失败',
+      'files.error.upload': '上传失败',
+      'files.downloading': '正在下载 {name}',
+
+      /* ---------- 终端 ---------- */
+      'terminal.title': '终端',
+      'terminal.placeholder': '输入命令后回车',
+      'terminal.prompt': '远端>',
+      'terminal.copy': '复制全部',
+      'terminal.clear': '清空',
+      'terminal.close': '关闭',
+      'terminal.empty': '终端已就绪，等待命令',
+      'terminal.connected': '终端已连接',
+      'terminal.disconnected': '终端已断开',
+      'terminal.echo': '{cmd}',
+
+      /* ---------- 隐私 ---------- */
+      'privacy.screen.on': '隐私屏已开启',
+      'privacy.screen.off': '隐私屏已关闭',
+      'privacy.screen.hint': '隐藏被控端正在显示的内容',
+      'privacy.blackout': '防窥黑屏',
+      'privacy.blackout.hint': '被远程时把画面变黑，防止旁人看到',
+      'privacy.autolock': '连接结束自动锁屏',
+      'privacy.autolock.hint': '断开连接后自动锁定被控端',
+      'privacy.screensaver': '自定义屏保',
+      'privacy.screensaver.none': '不处理',
+      'privacy.screensaver.blank': '关闭屏幕',
+      'privacy.screensaver.lock': '锁定屏幕',
+      'privacy.screensaver.sleep': '进入睡眠',
+
+      /* ---------- 设置 ---------- */
+      'settings.title': '设置',
+      'settings.group.display': '显示与画质',
+      'settings.group.quality': '画质预设',
+      'settings.group.bitrate': '码率',
+      'settings.group.bitrate.hint': '范围 2 – 500 Mbps，数值越高画面越清晰，占用带宽也越大',
+      'settings.group.framerate': '帧率',
+      'settings.group.framerate.hint': '每秒传输的画面帧数，运动场景建议 60 以上',
+      'settings.group.encoder': '编码器',
+      'settings.group.encoder.hint': '硬编省电省 CPU，软编兼容性更好',
+      'settings.group.audio': '音频',
+      'settings.group.audioEnable': '传输远程声音',
+      'settings.group.audioQuality': '音频质量',
+      'settings.group.audio.low': '低',
+      'settings.group.audio.medium': '中',
+      'settings.group.audio.high': '高',
+      'settings.group.input': '输入与外设',
+      'settings.group.keymap': '键盘映射方案',
+      'settings.group.keymap.edit': '编辑映射',
+      'settings.group.gamepad': '手柄支持',
+      'settings.group.gamepad.hint': '连接手柄后自动映射按键与摇杆',
+      'settings.group.privacy': '隐私与安全',
+      'settings.group.files': '文件传输',
+      'settings.group.terminal': '终端与端口映射',
+      'settings.group.terminalEnable': '允许远程打开终端',
+      'settings.group.ports': '端口映射',
+      'settings.group.ports.hint': '把本地端口转发到远程机器',
+      'settings.group.ports.local': '本地端口',
+      'settings.group.ports.remote': '远程地址',
+      'settings.group.ports.remotePort': '远程端口',
+      'settings.group.ports.add': '添加映射',
+      'settings.group.ports.empty': '还没有端口映射',
+      'settings.group.general': '通用',
+      'settings.group.language': '界面语言',
+      'settings.group.theme': '主题',
+      'settings.group.about': '关于',
+
+      'settings.quality.auto': '自动（跟随网络状况）',
+      'settings.quality.4k': '4K 超清',
+      'settings.quality.fps144': '144 帧 电竞',
+      'settings.quality.1080p60': '1080p 60 帧',
+      'settings.quality.1080p': '1080p 30 帧',
+      'settings.encoder.auto': '自动',
+      'settings.encoder.h264hw': 'H.264 硬编',
+      'settings.encoder.h264sw': 'H.264 软编',
+      'settings.keymap.default': '默认',
+      'settings.keymap.gaming': '游戏模式',
+      'settings.keymap.custom': '自定义方案',
+      'settings.language.zh': '简体中文',
+      'settings.language.en': 'English',
+      'settings.theme.system': '跟随系统',
+      'settings.theme.light': '浅色',
+      'settings.theme.dark': '深色',
+      'settings.about.version': '版本',
+      'settings.about.protocol': '协议版本',
+      'settings.about.license': '开源许可',
+      'settings.about.licenseValue': 'MIT',
+
+      /* ---------- 按键映射 ---------- */
+      'keymap.title': '按键映射',
+      'keymap.hint': '左边是本机按键，右边是发送出去的键',
+      'keymap.record': '录制',
+      'keymap.recording': '按下要映射的键…',
+      'keymap.unassigned': '未设置',
+      'keymap.addRow': '添加映射',
+      'keymap.empty': '还没有映射规则',
+      'keymap.reset': '恢复默认',
+      'keymap.preset': '方案',
+      'keymap.preset.default': '默认',
+      'keymap.preset.gaming': '游戏模式',
+      'keymap.preset.custom': '自定义',
+
+      /* ---------- 云键盘 ---------- */
+      'cloud.title': '云键盘',
+      'cloud.hint': '点击按键直接发送到远端，也可以输入文字',
+      'cloud.textPlaceholder': '输入文字后回车发送',
+      'cloud.send': '发送',
+      'cloud.hold': '按住 Alt 切换为组合键',
+      'cloud.grab': '抓取键盘',
+
+      /* ---------- 手柄 ---------- */
+      'gamepad.title': '手柄',
+      'gamepad.hint': '浏览器会把本机手柄映射为远端输入',
+      'gamepad.none': '没有检测到手柄',
+      'gamepad.connected': '{name}（{buttons} 个按键）',
+      'gamepad.connect': '连接手柄后这里会显示设备',
+      'gamepad.enable': '启用手柄映射',
+      'gamepad.deadzone': '摇杆死区',
+      'gamepad.refresh': '重新检测',
+
+      /* ---------- 电源 ---------- */
+      'power.title': '远程电源',
+      'power.shutdown': '关机',
+      'power.restart': '重启',
+      'power.sleep': '睡眠',
+      'power.logoff': '注销',
+      'power.confirm.shutdown': '确定要让远端关机吗？',
+      'power.confirm.restart': '确定要让远端重启吗？',
+      'power.confirm.sleep': '确定要让远端进入睡眠吗？',
+      'power.confirm.logoff': '确定要让远端注销吗？',
+      'power.sent': '已发送 {action} 指令',
+      'power.removed': '已移除虚拟屏',
+
+      /* ---------- 通知 ---------- */
+      'toast.connected': '已连接到 {name}',
+      'toast.disconnected': '连接已断开',
+      'toast.reconnecting': '正在重连…',
+      'toast.reconnected': '已重新连接',
+      'toast.settingsSaved': '设置已保存',
+      'toast.settingsReset': '设置已恢复默认',
+      'toast.keymapSaved': '按键映射已保存',
+      'toast.clipboard': '内容已复制',
+      'toast.terminalCopied': '终端内容已复制',
+      'toast.connectionLost': '连接已断开，正在重连',
+      'toast.sessionEnded': '远端已结束会话',
+      'toast.qualityChanged': '画质已切换为 {value}',
+      'toast.bitrateChanged': '码率已设为 {value} Mbps',
+      'toast.framerateChanged': '帧率已设为 {value} FPS',
+      'toast.encoderChanged': '编码器已切换为 {value}',
+      'toast.virtualScreenCreated': '虚拟屏已创建',
+      'toast.virtualScreenRemoved': '虚拟屏已移除',
+      'toast.screenSwitched': '已切换到 {name}',
+      'toast.mockNotice': '演示模式：后端尚未接入，数据为本地假数据'
+    },
+
+    en: {
+      /* ---------- App ---------- */
+      'app.name': 'SkycRemote',
+      'app.tagline': 'Peer-to-peer remote desktop',
+
+      /* ---------- Common ---------- */
+      'common.cancel': 'Cancel',
+      'common.confirm': 'Confirm',
+      'common.close': 'Close',
+      'common.save': 'Save',
+      'common.saved': 'Saved',
+      'common.reset': 'Reset',
+      'common.enable': 'Enable',
+      'common.disable': 'Disable',
+      'common.none': 'None',
+      'common.auto': 'Auto',
+      'common.unknown': 'Unknown',
+      'common.more': 'More',
+      'common.copy': 'Copy',
+      'common.copied': 'Copied to clipboard',
+      'common.refresh': 'Refresh',
+      'common.bytes': 'B',
+      'common.kb': 'KB',
+      'common.mb': 'MB',
+      'common.gb': 'GB',
+      'common.left': 'left',
+      'common.speed': 'Speed',
+      'common.eta': 'Remaining',
+      'common.canceled': 'Canceled',
+      'common.failed': 'Failed',
+      'common.done': 'Done',
+      'common.pending': 'Pending',
+      'common.running': 'Running',
+      'common.add': 'Add',
+      'common.remove': 'Remove',
+      'common.edit': 'Edit',
+      'common.default': 'Default',
+
+      /* ---------- Top bar ---------- */
+      'topbar.language': 'Interface language',
+      'topbar.theme': 'Switch theme',
+      'topbar.theme.system': 'Match system',
+      'topbar.theme.light': 'Light',
+      'topbar.theme.dark': 'Dark',
+      'topbar.settings': 'Settings',
+
+      /* ---------- Connect screen ---------- */
+      'connect.title': 'Connect to a remote device',
+      'connect.subtitle': 'Enter a device ID, or pick a device from the list below',
+      'connect.placeholder': 'Device ID',
+      'connect.button': 'Connect',
+      'connect.connecting': 'Connecting…',
+      'connect.hint': 'The device ID is shown on the controlled device’s home screen',
+      'connect.error.empty': 'Enter a device ID',
+      'connect.error.invalid': 'That device ID does not look right',
+      'connect.error.offline': 'That device is offline',
+      'connect.error.refused': 'The remote side refused the connection',
+      'connect.error.timeout': 'Connection timed out, try again',
+      'connect.error.busy': 'A connection is already in progress',
+      'connect.tab.recent': 'Recent',
+      'connect.tab.favorite': 'Favorites',
+      'connect.tab.online': 'Online',
+      'connect.empty.recent': 'No devices connected yet',
+      'connect.empty.favorite': 'No favorites yet',
+      'connect.empty.online': 'No device is online right now',
+      'connect.empty.hint': 'Devices you connect to will show up here',
+      'connect.device.online': 'Online',
+      'connect.device.offline': 'Offline',
+      'connect.device.latency': '{ms} ms',
+      'connect.device.lastSeen': 'Last connected {time}',
+      'connect.device.connect': 'Connect',
+      'connect.device.favorite': 'Favorite',
+      'connect.device.unfavorite': 'Remove from favorites',
+      'connect.device.remove': 'Remove from list',
+      'connect.device.missing': 'Device not found',
+      'connect.search': 'Search devices',
+      'connect.search.empty': 'No matching device',
+
+      /* ---------- Remote toolbar ---------- */
+      'remote.toolbar.show': 'Show toolbar',
+      'remote.toolbar.hide': 'Hide toolbar',
+      'remote.toolbar.quality': 'Quality',
+      'remote.toolbar.framerate': 'Frame rate',
+      'remote.toolbar.bitrate': 'Bitrate',
+      'remote.toolbar.screens': 'Screens',
+      'remote.toolbar.virtual': 'Virtual',
+      'remote.toolbar.files': 'Files',
+      'remote.toolbar.terminal': 'Terminal',
+      'remote.toolbar.keymap': 'Mapping',
+      'remote.toolbar.cloudKeyboard': 'Cloud keyboard',
+      'remote.toolbar.gamepad': 'Gamepad',
+      'remote.toolbar.privacy': 'Privacy screen',
+      'remote.toolbar.power': 'Power',
+      'remote.toolbar.disconnect': 'Disconnect',
+      'remote.toolbar.cursor': 'Cursor',
+      'remote.toolbar.fullscreen': 'Fullscreen',
+      'remote.toolbar.exitFullscreen': 'Exit fullscreen',
+      'remote.toolbar.more': 'More tools',
+      'remote.cursor.default': 'Default arrow',
+      'remote.cursor.pointer': 'Pointer',
+      'remote.cursor.crosshair': 'Crosshair',
+      'remote.cursor.text': 'Text',
+      'remote.cursor.hide': 'Hide cursor',
+
+      /* ---------- Status ---------- */
+      'status.idle': 'Not connected',
+      'status.punching': 'Punching hole…',
+      'status.handshaking': 'Handshaking…',
+      'status.connected': 'Connected',
+      'status.reconnecting': 'Reconnecting…',
+      'status.closed': 'Disconnected',
+      'status.failed': 'Connection failed',
+      'status.latency': '{ms} ms',
+      'status.bitrate': '{mbps} Mbps',
+      'status.framerate': '{fps} FPS',
+      'status.resolution': '{w}×{h}',
+      'status.quality.auto': 'Auto',
+      'status.quality.4k': '4K',
+      'status.quality.fps144': '144 fps',
+      'status.quality.1080p60': '1080p60',
+      'status.quality.1080p': '1080p',
+
+      /* ---------- Screens ---------- */
+      'screen.title': 'Select a screen',
+      'screen.primary': 'Primary',
+      'screen.empty': 'No other screens',
+      'screen.virtual.title': 'Virtual screen',
+      'screen.virtual.hint': 'Create an extra virtual display to park separate windows on',
+      'screen.virtual.create': 'Create virtual screen',
+      'screen.virtual.remove': 'Remove virtual screen',
+      'screen.virtual.active': 'In use',
+
+      /* ---------- Context menu ---------- */
+      'ctx.view': 'View',
+      'ctx.sortBy': 'Sort by',
+      'ctx.refresh': 'Refresh',
+      'ctx.paste': 'Paste',
+      'ctx.newFolder': 'New folder',
+      'ctx.properties': 'Properties',
+      'ctx.displaySettings': 'Display settings',
+      'ctx.personalize': 'Personalize',
+      'ctx.taskManager': 'Task manager',
+      'ctx.openTerminal': 'Open terminal here',
+      'ctx.run': 'Run',
+      'ctx.separator': 'Separator',
+
+      /* ---------- File transfer ---------- */
+      'files.title': 'File transfer',
+      'files.path': 'Path',
+      'files.up': 'Upload',
+      'files.upload': 'Upload file',
+      'files.download': 'Download',
+      'files.refresh': 'Refresh',
+      'files.empty': 'This folder is empty',
+      'files.dropzone': 'Drop files here to upload',
+      'files.dropzone.hint': 'Or use the upload button to pick files',
+      'files.queue': 'Transfer queue',
+      'files.queue.empty': 'No transfers in flight',
+      'files.item.uploading': 'Uploading',
+      'files.item.downloading': 'Downloading',
+      'files.item.done': 'Done',
+      'files.item.failed': 'Failed',
+      'files.item.canceled': 'Canceled',
+      'files.size': 'Size',
+      'files.modified': 'Modified',
+      'files.folder': 'Folder',
+      'files.file': 'File',
+      'files.dir': 'Default download folder',
+      'files.browse': 'Browse…',
+      'files.error.read': 'Could not read the folder',
+      'files.error.download': 'Download failed',
+      'files.error.upload': 'Upload failed',
+      'files.downloading': 'Downloading {name}',
+
+      /* ---------- Terminal ---------- */
+      'terminal.title': 'Terminal',
+      'terminal.placeholder': 'Type a command and press Enter',
+      'terminal.prompt': 'remote>',
+      'terminal.copy': 'Copy all',
+      'terminal.clear': 'Clear',
+      'terminal.close': 'Close',
+      'terminal.empty': 'Terminal ready, waiting for a command',
+      'terminal.connected': 'Terminal connected',
+      'terminal.disconnected': 'Terminal disconnected',
+      'terminal.echo': '{cmd}',
+
+      /* ---------- Privacy ---------- */
+      'privacy.screen.on': 'Privacy screen on',
+      'privacy.screen.off': 'Privacy screen off',
+      'privacy.screen.hint': 'Hide what the controlled device is showing',
+      'privacy.blackout': 'Shoulder-surfing blackout',
+      'privacy.blackout.hint': 'Black out the screen while being controlled',
+      'privacy.autolock': 'Lock screen after disconnecting',
+      'privacy.autolock.hint': 'Lock the controlled device once the session ends',
+      'privacy.screensaver': 'Custom screensaver',
+      'privacy.screensaver.none': 'Do nothing',
+      'privacy.screensaver.blank': 'Blank the screen',
+      'privacy.screensaver.lock': 'Lock the screen',
+      'privacy.screensaver.sleep': 'Sleep the machine',
+
+      /* ---------- Settings ---------- */
+      'settings.title': 'Settings',
+      'settings.group.display': 'Display & quality',
+      'settings.group.quality': 'Quality preset',
+      'settings.group.bitrate': 'Bitrate',
+      'settings.group.bitrate.hint': 'Range 2 – 500 Mbps. Higher means a sharper picture and more bandwidth.',
+      'settings.group.framerate': 'Frame rate',
+      'settings.group.framerate.hint': 'Frames sent per second. 60 or more for motion.',
+      'settings.group.encoder': 'Encoder',
+      'settings.group.encoder.hint': 'Hardware is cheaper on CPU; software is more compatible.',
+      'settings.group.audio': 'Audio',
+      'settings.group.audioEnable': 'Stream remote audio',
+      'settings.group.audioQuality': 'Audio quality',
+      'settings.group.audio.low': 'Low',
+      'settings.group.audio.medium': 'Medium',
+      'settings.group.audio.high': 'High',
+      'settings.group.input': 'Input & peripherals',
+      'settings.group.keymap': 'Keyboard mapping',
+      'settings.group.keymap.edit': 'Edit mapping',
+      'settings.group.gamepad': 'Gamepad support',
+      'settings.group.gamepad.hint': 'Map a connected gamepad automatically',
+      'settings.group.privacy': 'Privacy & security',
+      'settings.group.files': 'File transfer',
+      'settings.group.terminal': 'Terminal & port mapping',
+      'settings.group.terminalEnable': 'Allow opening a terminal remotely',
+      'settings.group.ports': 'Port mapping',
+      'settings.group.ports.hint': 'Forward a local port to the remote machine',
+      'settings.group.ports.local': 'Local port',
+      'settings.group.ports.remote': 'Remote host',
+      'settings.group.ports.remotePort': 'Remote port',
+      'settings.group.ports.add': 'Add mapping',
+      'settings.group.ports.empty': 'No port mappings yet',
+      'settings.group.general': 'General',
+      'settings.group.language': 'Interface language',
+      'settings.group.theme': 'Theme',
+      'settings.group.about': 'About',
+
+      'settings.quality.auto': 'Auto (follow network conditions)',
+      'settings.quality.4k': '4K Ultra HD',
+      'settings.quality.fps144': '144 fps Esports',
+      'settings.quality.1080p60': '1080p 60 fps',
+      'settings.quality.1080p': '1080p 30 fps',
+      'settings.encoder.auto': 'Auto',
+      'settings.encoder.h264hw': 'H.264 hardware',
+      'settings.encoder.h264sw': 'H.264 software',
+      'settings.keymap.default': 'Default',
+      'settings.keymap.gaming': 'Gaming',
+      'settings.keymap.custom': 'Custom scheme',
+      'settings.language.zh': '简体中文',
+      'settings.language.en': 'English',
+      'settings.theme.system': 'Match system',
+      'settings.theme.light': 'Light',
+      'settings.theme.dark': 'Dark',
+      'settings.about.version': 'Version',
+      'settings.about.protocol': 'Protocol version',
+      'settings.about.license': 'License',
+      'settings.about.licenseValue': 'MIT',
+
+      /* ---------- Key mapping ---------- */
+      'keymap.title': 'Key mapping',
+      'keymap.hint': 'Left is the key on this machine, right is the key sent out',
+      'keymap.record': 'Record',
+      'keymap.recording': 'Press the key to map…',
+      'keymap.unassigned': 'Not set',
+      'keymap.addRow': 'Add mapping',
+      'keymap.empty': 'No mapping rules yet',
+      'keymap.reset': 'Restore defaults',
+      'keymap.preset': 'Scheme',
+      'keymap.preset.default': 'Default',
+      'keymap.preset.gaming': 'Gaming',
+      'keymap.preset.custom': 'Custom',
+
+      /* ---------- Cloud keyboard ---------- */
+      'cloud.title': 'Cloud keyboard',
+      'cloud.hint': 'Click a key to send it, or type text directly',
+      'cloud.textPlaceholder': 'Type text and press Enter',
+      'cloud.send': 'Send',
+      'cloud.hold': 'Hold Alt for combos',
+      'cloud.grab': 'Grab keyboard',
+
+      /* ---------- Gamepad ---------- */
+      'gamepad.title': 'Gamepad',
+      'gamepad.hint': 'The browser maps a local gamepad onto remote input',
+      'gamepad.none': 'No gamepad detected',
+      'gamepad.connected': '{name} ({buttons} buttons)',
+      'gamepad.connect': 'Connect a gamepad and it will show up here',
+      'gamepad.enable': 'Enable gamepad mapping',
+      'gamepad.deadzone': 'Stick deadzone',
+      'gamepad.refresh': 'Scan again',
+
+      /* ---------- Power ---------- */
+      'power.title': 'Remote power',
+      'power.shutdown': 'Shut down',
+      'power.restart': 'Restart',
+      'power.sleep': 'Sleep',
+      'power.logoff': 'Log off',
+      'power.confirm.shutdown': 'Really shut the remote machine down?',
+      'power.confirm.restart': 'Really restart the remote machine?',
+      'power.confirm.sleep': 'Really put the remote machine to sleep?',
+      'power.confirm.logoff': 'Really log the remote machine off?',
+      'power.sent': 'Sent {action} to the remote side',
+      'power.removed': 'Virtual screen removed',
+
+      /* ---------- Notifications ---------- */
+      'toast.connected': 'Connected to {name}',
+      'toast.disconnected': 'Disconnected',
+      'toast.reconnecting': 'Reconnecting…',
+      'toast.reconnected': 'Reconnected',
+      'toast.settingsSaved': 'Settings saved',
+      'toast.settingsReset': 'Settings restored to defaults',
+      'toast.keymapSaved': 'Key mapping saved',
+      'toast.clipboard': 'Copied to clipboard',
+      'toast.terminalCopied': 'Terminal output copied',
+      'toast.connectionLost': 'Connection lost, reconnecting',
+      'toast.sessionEnded': 'The remote side ended the session',
+      'toast.qualityChanged': 'Quality switched to {value}',
+      'toast.bitrateChanged': 'Bitrate set to {value} Mbps',
+      'toast.framerateChanged': 'Frame rate set to {value} FPS',
+      'toast.encoderChanged': 'Encoder switched to {value}',
+      'toast.virtualScreenCreated': 'Virtual screen created',
+      'toast.virtualScreenRemoved': 'Virtual screen removed',
+      'toast.screenSwitched': 'Switched to {name}',
+      'toast.mockNotice': 'Demo mode: the backend is not wired up yet, all data is local mock data'
+    }
+  };
+
+  var SUPPORTED = ['zh', 'en'];
+  var current = 'zh';
+
+  function detect() {
+    try {
+      var stored = global.localStorage && global.localStorage.getItem('skycremote.locale');
+      if (stored && SUPPORTED.indexOf(stored) !== -1) return stored;
+    } catch (e) { /* private mode, ignore */ }
+    var nav = (global.navigator && (global.navigator.language || global.navigator.userLanguage)) || 'zh';
+    return /^zh/i.test(nav) ? 'zh' : 'en';
+  }
+
+  /** Replace `{name}` placeholders with the given values. */
+  function interpolate(template, vars) {
+    if (!vars) return template;
+    return String(template).replace(/\{(\w+)\}/g, function (whole, key) {
+      return Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : whole;
+    });
+  }
+
+  /**
+   * Translate a key. Falls back to English, then to the key itself so a
+   * missing entry is visible instead of silently blank.
+   */
+  function t(key, vars) {
+    var table = TABLE[current] || TABLE.en;
+    var value = table[key];
+    if (value === undefined) value = TABLE.en[key];
+    if (value === undefined) return key;
+    return interpolate(value, vars);
+  }
+
+  function setLocale(lang) {
+    if (SUPPORTED.indexOf(lang) === -1) return current;
+    current = lang;
+    try {
+      if (global.localStorage) global.localStorage.setItem('skycremote.locale', lang);
+    } catch (e) { /* ignore */ }
+    if (global.document && global.document.documentElement) {
+      global.document.documentElement.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
+    }
+    return current;
+  }
+
+  function getLocale() { return current; }
+
+  /** Keys present in one language but missing in the other. */
+  function audit() {
+    var zh = Object.keys(TABLE.zh);
+    var en = Object.keys(TABLE.en);
+    var missingInEn = zh.filter(function (k) { return en.indexOf(k) === -1; });
+    var missingInZh = en.filter(function (k) { return zh.indexOf(k) === -1; });
+    return {
+      total: zh.length,
+      missingInEn: missingInEn,
+      missingInZh: missingInZh,
+      ok: missingInEn.length === 0 && missingInZh.length === 0
+    };
+  }
+
+  NS.i18n = {
+    t: t,
+    setLocale: setLocale,
+    getLocale: getLocale,
+    detect: detect,
+    audit: audit,
+    supported: SUPPORTED.slice(),
+    table: TABLE
+  };
+})(typeof window !== 'undefined' ? window : globalThis);

@@ -1,0 +1,49 @@
+[package]
+name = "skycremote-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The core of SkycRemote: capture, encode, transport, input."
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+rand.workspace = true
+uuid.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+aes-gcm.workspace = true
+x25519-dalek.workspace = true
+getrandom.workspace = true
+reqwest.workspace = true
+webrtc.workspace = true
+image.workspace = true
+imagepipe.workspace = true
+arc-swap.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+time.workspace = true
+rcgen = "0.14.10"
+quinn.workspace = true
+rustls.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+core-graphics = "0.25"
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = "0.62"
+windows-core = "0.100"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
