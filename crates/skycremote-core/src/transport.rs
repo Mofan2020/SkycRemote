@@ -274,7 +274,12 @@ pub async fn listen(port: u16) -> Result<(Endpoint, SocketAddr)> {
 }
 
 /// Open a port to reach the other end.
-pub async fn connect(address: SocketAddr) -> Result<Endpoint> {
+/// `address` is where the other end is.  The socket this end uses is not
+/// tied to it -- the local address is picked by the system -- but the
+/// caller keeps it here because it is the thing they are connecting to,
+/// and a future version may need to bind a particular interface to reach
+/// it.
+pub async fn connect(_address: SocketAddr) -> Result<Endpoint> {
     let mut client_config = ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -348,7 +353,7 @@ pub async fn open(
             (send, recv)
         }
         Side::Responder => {
-            let (mut send, mut recv) = connection.accept_bi().await?;
+            let (send, mut recv) = connection.accept_bi().await?;
             // The empty message that says the stream is ready is taken
             // off here, so that the first message the caller reads is a
             // real one.

@@ -24,12 +24,8 @@ aes-gcm.workspace = true
 x25519-dalek.workspace = true
 getrandom.workspace = true
 reqwest.workspace = true
-webrtc.workspace = true
 image.workspace = true
-imagepipe.workspace = true
-arc-swap.workspace = true
 parking_lot.workspace = true
-crossbeam-channel.workspace = true
 time.workspace = true
 
 # Screen capture.  xcap owns the pixels; display-info is the second opinion

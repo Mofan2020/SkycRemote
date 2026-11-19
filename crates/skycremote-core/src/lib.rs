@@ -9,6 +9,7 @@ pub mod crypto;
 pub mod encode;
 pub mod hole;
 pub mod protocol;
+pub mod session;
 pub mod transport;
 
 /// The version of the wire protocol.  A peer that speaks a different one

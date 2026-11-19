@@ -96,7 +96,11 @@ impl KeyPair {
         hk.expand(INFO, &mut key)
             .map_err(|_| HandshakeError::KeyDerivation)?;
         Ok(SessionKey {
-            cipher: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key)),
+            // The key is always 32 bytes, so the conversion cannot
+            // fail; it is a Result only because the type is generic.
+            cipher: Aes256Gcm::new(
+                &Key::<Aes256Gcm>::try_from(&key[..]).expect("a 32 byte key fits"),
+            ),
         })
     }
 }
@@ -129,10 +133,10 @@ impl SessionKey {
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, HandshakeError> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::fill(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(&nonce_bytes[..]).expect("a 12 byte nonce fits");
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|_| HandshakeError::Decrypt("the encryption failed".into()))?;
         let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
         out.extend_from_slice(&nonce_bytes);
@@ -146,9 +150,9 @@ impl SessionKey {
             return Err(HandshakeError::Decrypt("the message is too short".into()));
         }
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes).expect("a 12 byte nonce fits");
         self.cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| HandshakeError::Decrypt("the message is not ours".into()))
     }
 }

@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::PROTOCOL_VERSION;
-
 /// What a session can say to the other end.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -189,7 +187,7 @@ mod tests {
     #[test]
     fn a_message_survives_a_round_trip() {
         let message = Message::Hello(Hello {
-            version: PROTOCOL_VERSION,
+            version: crate::PROTOCOL_VERSION,
             device_id: "abc".into(),
             device_name: "测试机器".into(),
             public_key: vec![1, 2, 3],
