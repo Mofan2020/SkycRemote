@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::capture::{self, Screen};
 use crate::encode::EncoderConfig;
-use crate::input::{self, Injector};
+use crate::input;
 use crate::pipeline::{self, ScreenSource};
 use crate::protocol::{Message, ScreenInfo};
 use crate::transport;
@@ -118,10 +118,7 @@ async fn serve_once(options: &HostOptions) -> Result<()> {
     .await
     .context("the other end did not arrive")?;
 
-    eprintln!(
-        "skycremote: the other end is here, sharing {}",
-        shared.name
-    );
+    eprintln!("skycremote: the other end is here, sharing {}", shared.name);
 
     // The pictures go out on their own task, because they are made at
     // the frame rate and the input has to be answered the moment it
@@ -190,9 +187,7 @@ async fn serve_once(options: &HostOptions) -> Result<()> {
                         #[cfg(not(target_os = "macos"))]
                         let has_permission = false;
                         if !has_permission {
-                            eprintln!(
-                                "skycremote: 輸入沒有送達 —— 還沒有「輔助功能」權限"
-                            );
+                            eprintln!("skycremote: 輸入沒有送達 —— 還沒有「輔助功能」權限");
                             continue;
                         }
                         if let Err(error) = injector.inject(&event, &shared) {
@@ -200,8 +195,7 @@ async fn serve_once(options: &HostOptions) -> Result<()> {
                         }
                     }
                     Message::ListScreens => {
-                        let list: Vec<ScreenInfo> =
-                            screens.iter().map(screen_to_info).collect();
+                        let list: Vec<ScreenInfo> = screens.iter().map(screen_to_info).collect();
                         let _ = send(&sender, &Message::Screens { screens: list }).await;
                     }
                     Message::SwitchScreen { index } => {

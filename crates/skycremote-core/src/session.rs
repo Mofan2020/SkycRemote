@@ -83,7 +83,8 @@ impl PieceHeader {
             total: u16::from_be_bytes([bytes[6], bytes[7]]),
             index: u16::from_be_bytes([bytes[8], bytes[9]]),
             pts_ns: u64::from_be_bytes([
-                bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16], bytes[17],
+                bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16],
+                bytes[17],
             ]),
             keyframe: bytes[18] & FLAG_KEYFRAME != 0,
         })
@@ -421,7 +422,11 @@ mod tests {
         for piece in &first_pieces[..first_pieces.len() - 1] {
             assert!(assembler.push(piece).expect("no stale piece").is_none());
         }
-        assert_eq!(assembler.pending_pictures(), 1, "it waits for the missing piece");
+        assert_eq!(
+            assembler.pending_pictures(),
+            1,
+            "it waits for the missing piece"
+        );
 
         // Pictures that are complete come back regardless.
         let second = a_frame(10_000, false);
@@ -487,8 +492,14 @@ mod tests {
             }
         }
         assert_eq!(done.len(), 2, "both pictures must come back");
-        assert!(done.contains(&first.data), "the first picture must be whole");
-        assert!(done.contains(&second.data), "the second picture must be whole");
+        assert!(
+            done.contains(&first.data),
+            "the first picture must be whole"
+        );
+        assert!(
+            done.contains(&second.data),
+            "the second picture must be whole"
+        );
     }
 
     #[test]

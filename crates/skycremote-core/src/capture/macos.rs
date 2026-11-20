@@ -12,7 +12,11 @@
 //! be 2: external 4K panels run at 1.5x and 1.25x, and a Mac driving two
 //! screens of different densities has to report each of them correctly.
 
-use super::{physical_size, Screen};
+/// Whether the size the backend reports is already in pixels.
+///
+/// CoreGraphics reports the size in points, so the scale factor still has
+/// to be applied to get the pixel count the capture will really have.
+pub const SIZE_IS_PIXELS: bool = false;
 
 /// The pixels-per-point ratio of a display, given its two descriptions.
 ///
@@ -36,35 +40,6 @@ pub fn retina_scale_factor(logical_width: u32, pixel_width: u32) -> f64 {
     }
 }
 
-/// Builds a [`Screen`] from what a macOS backend reported.
-///
-/// `width` and `height` are the point size CoreGraphics gave us, so they
-/// are multiplied by the scale factor to become the pixel size that
-/// [`super::capture_frame`] will actually return.
-pub fn make_screen(
-    index: usize,
-    name: String,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-    primary: bool,
-    origin_x: f64,
-    origin_y: f64,
-) -> Screen {
-    let (pixel_width, pixel_height) = physical_size(width, height, scale_factor);
-
-    Screen {
-        index,
-        name,
-        width: pixel_width,
-        height: pixel_height,
-        scale_factor,
-        primary,
-        origin_x,
-        origin_y,
-    }
-}
-
 /// Whether this screen is a Retina-class panel.
 ///
 /// Kept as a named helper because "scale factor greater than one" is the
@@ -77,11 +52,22 @@ pub fn is_retina(scale_factor: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{make_screen, ScreenSpec};
 
     #[test]
     fn a_retina_display_reports_its_physical_pixels() {
         // A 13" MacBook: 1440x900 points, 2 pixels per point.
-        let screen = make_screen(0, "Built-in".into(), 1440, 900, 2.0, true, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "Built-in".into(),
+            width: 1440,
+            height: 900,
+            scale_factor: 2.0,
+            primary: true,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 2880);
         assert_eq!(screen.height, 1800);
         assert!(is_retina(screen.scale_factor));
@@ -89,7 +75,17 @@ mod tests {
 
     #[test]
     fn a_plain_display_is_left_alone() {
-        let screen = make_screen(1, "Dell".into(), 1920, 1080, 1.0, false, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 1,
+            name: "Dell".into(),
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
         assert!(!is_retina(screen.scale_factor));
@@ -98,7 +94,17 @@ mod tests {
     #[test]
     fn fractional_scaling_rounds_to_the_nearest_pixel() {
         // A 4K panel at 1.5x is 2560x1440 points and 3840x2160 pixels.
-        let screen = make_screen(0, "4K".into(), 2560, 1440, 1.5, true, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "4K".into(),
+            width: 2560,
+            height: 1440,
+            scale_factor: 1.5,
+            primary: true,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 3840);
         assert_eq!(screen.height, 2160);
     }
@@ -110,7 +116,17 @@ mod tests {
         assert_eq!(retina_scale_factor(1440, 0), 1.0);
         assert_eq!(retina_scale_factor(0, 2880), 1.0);
 
-        let screen = make_screen(0, "Switching".into(), 800, 600, 0.0, false, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "Switching".into(),
+            width: 800,
+            height: 600,
+            scale_factor: 0.0,
+            primary: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 800);
         assert_eq!(screen.height, 600);
     }

@@ -66,10 +66,6 @@ extern "C" {
 /// 分不出来。
 const EVENT_TAP_HID: u32 = 0;
 
-/// 键盘按下。
-const EVENT_KEY_DOWN: u32 = 10;
-/// 键盘松开。
-const EVENT_KEY_UP: u32 = 11;
 /// 鼠标移动。
 const EVENT_MOUSE_MOVED: u32 = 5;
 /// 左键按下。
@@ -84,8 +80,6 @@ const EVENT_RIGHT_MOUSE_UP: u32 = 4;
 const EVENT_OTHER_MOUSE_DOWN: u32 = 25;
 /// 中键松开。
 const EVENT_OTHER_MOUSE_UP: u32 = 26;
-/// 滚轮。
-const EVENT_SCROLL_WHEEL: u32 = 22;
 
 /// Shift。
 const FLAG_SHIFT: u64 = 0x0002_0000;

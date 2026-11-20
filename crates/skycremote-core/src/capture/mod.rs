@@ -148,11 +148,7 @@ pub fn list_screens() -> Result<Vec<Screen>, CaptureError> {
 
     let mut screens = Vec::with_capacity(monitors.len());
     for (index, monitor) in monitors.iter().enumerate() {
-        screens.push(screen_from_monitor(
-            index,
-            monitor,
-            infos.get(index),
-        )?);
+        screens.push(screen_from_monitor(index, monitor, infos.get(index))?);
     }
 
     Ok(screens)
@@ -312,6 +308,64 @@ fn sane_scale(scale_factor: f64) -> f64 {
     }
 }
 
+/// What a backend reported about one screen.
+///
+/// The fields are gathered here rather than passed on one by one, because
+/// they always travel together: the size, the scale and the place on the
+/// desktop are one screen's description, not eight unrelated numbers.
+#[derive(Debug, Clone)]
+pub struct ScreenSpec {
+    /// The position of this screen in the list the capture end reports.
+    pub index: usize,
+    /// The name the operating system gives the screen.
+    pub name: String,
+    /// The width the backend reported, in its own units.
+    pub width: u32,
+    /// The height the backend reported, in its own units.
+    pub height: u32,
+    /// Pixels per logical unit.
+    pub scale_factor: f64,
+    /// Whether this screen holds the menu bar / taskbar.
+    pub primary: bool,
+    /// Where the top left corner sits on the desktop.
+    pub origin_x: f64,
+    /// Where the top left corner sits on the desktop.
+    pub origin_y: f64,
+    /// Whether `width` and `height` are already in pixels.
+    ///
+    /// macOS and Linux report points — the size a window would have — so
+    /// the scale factor still has to be applied to get the number of
+    /// pixels the capture will really contain.  Windows reports
+    /// `dmPelsWidth`, which is physical pixels already; multiplying it
+    /// again would claim a screen twice as wide as the panel.
+    ///
+    /// This is a property of the backend, not of the machine the code
+    /// happens to run on, so it is carried in the data rather than
+    /// decided by a `cfg` block.  That way the Windows numbers can be
+    /// checked on any machine.
+    pub size_is_pixels: bool,
+}
+
+/// Builds one [`Screen`] from what a backend reported.
+pub fn make_screen(spec: ScreenSpec) -> Screen {
+    let (width, height) = if spec.size_is_pixels {
+        (spec.width, spec.height)
+    } else {
+        physical_size(spec.width, spec.height, spec.scale_factor)
+    };
+
+    Screen {
+        index: spec.index,
+        name: spec.name,
+        width,
+        height,
+        scale_factor: spec.scale_factor,
+        primary: spec.primary,
+        origin_x: spec.origin_x,
+        origin_y: spec.origin_y,
+    }
+}
+
 /// Builds one [`Screen`] from what `xcap` reported, falling back to
 /// `display-info` for any field the backend refused to answer.
 fn screen_from_monitor(
@@ -369,7 +423,7 @@ fn screen_from_monitor(
         .map(|info| (f64::from(info.x), f64::from(info.y)))
         .unwrap_or((0.0, 0.0));
 
-    Ok(platform::make_screen(
+    Ok(make_screen(ScreenSpec {
         index,
         name,
         width,
@@ -378,7 +432,8 @@ fn screen_from_monitor(
         primary,
         origin_x,
         origin_y,
-    ))
+        size_is_pixels: platform::SIZE_IS_PIXELS,
+    }))
 }
 
 #[cfg(target_os = "macos")]

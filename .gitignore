@@ -1,14 +1,4 @@
-# Build output
 /target
-**/target/
-
-# Editors
-.idea/
-.vscode/
-*.swp
+**/*.rs.bk
+*.pdb
 .DS_Store
-
-# Local data
-*.log
-/data/
-/tmp/

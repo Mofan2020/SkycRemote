@@ -26,12 +26,7 @@ const HEIGHT: u32 = 240;
 fn a_test_picture() -> RgbaImage {
     let mut image = RgbaImage::new(WIDTH, HEIGHT);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        *pixel = image::Rgba([
-            (x % 256) as u8,
-            (y % 256) as u8,
-            ((x + y) % 256) as u8,
-            255,
-        ]);
+        *pixel = image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255]);
     }
     image
 }
@@ -76,7 +71,7 @@ async fn a_picture_survives_the_whole_path() {
         .expect("the connection must be made");
     let server_connection = accept_task.await.expect("the task must finish");
 
-    let (mut client_sender, mut client_receiver) = open(client, Side::Initiator)
+    let (client_sender, _client_receiver) = open(client, Side::Initiator)
         .await
         .expect("the channels must open");
     let (_server_sender, mut server_receiver) = open(server_connection, Side::Responder)
@@ -180,7 +175,7 @@ async fn several_pictures_in_a_row_all_arrive() {
     let server_connection = accept_task.await.expect("the task must finish");
 
     // The picture is sent from the client and read on the server side.
-    let (mut client_sender, _client_receiver) = open(client, Side::Initiator)
+    let (client_sender, _client_receiver) = open(client, Side::Initiator)
         .await
         .expect("the channels must open");
     let (_server_sender, mut server_receiver) = open(server_connection, Side::Responder)

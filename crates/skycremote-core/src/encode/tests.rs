@@ -17,12 +17,7 @@ use super::*;
 fn test_frame(width: u32, height: u32) -> Frame {
     let mut image = RgbaImage::new(width, height);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        *pixel = Rgba([
-            (x % 256) as u8,
-            (y % 256) as u8,
-            ((x + y) % 256) as u8,
-            255,
-        ]);
+        *pixel = Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255]);
     }
 
     Frame {
@@ -183,10 +178,7 @@ fn timestamps_never_go_backwards() {
 
 #[test]
 fn a_hardware_encoder_is_refused_with_an_explanation() {
-    let result = Encoder::with_hardware(
-        HardwareEncoder::Vaapi,
-        EncoderConfig::for_screen(64, 48),
-    );
+    let result = Encoder::with_hardware(HardwareEncoder::Vaapi, EncoderConfig::for_screen(64, 48));
 
     match result {
         Err(EncodeError::Unsupported(message)) => {

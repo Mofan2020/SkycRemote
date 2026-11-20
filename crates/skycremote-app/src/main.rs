@@ -71,8 +71,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -81,7 +80,11 @@ fn main() -> anyhow::Result<()> {
         // The window wants the main thread to itself, because that is
         // where the system draws it.  So it gets no runtime of its own
         // here; it makes one on a thread of its own.
-        Command::Ui { width, height, probe } => {
+        Command::Ui {
+            width,
+            height,
+            probe,
+        } => {
             ui::run(ui::Options {
                 width,
                 height,
@@ -109,9 +112,7 @@ fn main() -> anyhow::Result<()> {
                         } else {
                             name.clone()
                         };
-                        eprintln!(
-                            "skycremote: sharing {id} as {display_name} on port {port}"
-                        );
+                        eprintln!("skycremote: sharing {id} as {display_name} on port {port}");
                         skycremote_core::host::run(skycremote_core::host::HostOptions {
                             tracker,
                             device_id: id,

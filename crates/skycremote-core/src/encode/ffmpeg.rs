@@ -98,7 +98,9 @@ impl LibX264Encoder {
     /// percent of bitrate.
     pub fn new(config: &super::EncoderConfig) -> Result<Self, super::EncodeError> {
         ffmpeg::init().map_err(|err| {
-            super::EncodeError::BackendUnavailable(format!("ffmpeg could not be initialised: {err}"))
+            super::EncodeError::BackendUnavailable(format!(
+                "ffmpeg could not be initialised: {err}"
+            ))
         })?;
 
         let codec = ffmpeg::encoder::find_by_name("libx264").ok_or_else(|| {
@@ -160,11 +162,8 @@ impl LibX264Encoder {
         frame: &crate::capture::Frame,
         pts: std::time::Duration,
     ) -> Result<Option<Vec<u8>>, super::EncodeError> {
-        let mut rgba = ffmpeg::frame::Video::new(
-            ffmpeg::format::Pixel::RGBA,
-            self.width,
-            self.height,
-        );
+        let mut rgba =
+            ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, self.width, self.height);
 
         // The captured image may have padding at the end of each row, so
         // the pixels are copied row by row into ffmpeg's own stride rather

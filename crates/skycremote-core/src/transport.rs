@@ -34,7 +34,6 @@ use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 /// How big one picture chunk may be before it is split.
 const CHUNK_SIZE: usize = 16 * 1024;
 
-
 /// Which side of the session this is.
 ///
 /// The two sides are not the same: one of them opens the control
@@ -235,9 +234,9 @@ pub async fn listen(port: u16) -> Result<(Endpoint, SocketAddr)> {
     let certificate = CertificateDer::from(keys.0);
     let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(keys.1));
 
-    let mut server_config = rustls::ServerConfig::builder_with_provider(
-        Arc::new(rustls::crypto::ring::default_provider()),
-    )
+    let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
     .with_protocol_versions(&[&rustls::version::TLS13])
     .context("TLS 1.3 is not available")?
     .with_no_client_auth()
@@ -287,14 +286,13 @@ pub async fn listen(port: u16) -> Result<(Endpoint, SocketAddr)> {
 /// and a future version may need to bind a particular interface to reach
 /// it.
 pub async fn connect(_address: SocketAddr) -> Result<Endpoint> {
-    let mut client_config = ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .context("TLS 1.3 is not available")?
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
-    .with_no_client_auth();
+    let mut client_config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .context("TLS 1.3 is not available")?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
+            .with_no_client_auth();
 
     client_config.enable_early_data = true;
 
@@ -323,17 +321,14 @@ pub async fn connect(_address: SocketAddr) -> Result<Endpoint> {
 /// on.  A NAT that has let one packet through will let the rest of the
 /// flow through as well, but only if it is the same port number, so
 /// the hole and the session have to share one socket.
-pub async fn connect_direct(
-    tracker: &str,
-    device_id: &str,
-) -> Result<(Sender, Receiver)> {
+pub async fn connect_direct(tracker: &str, device_id: &str) -> Result<(Sender, Receiver)> {
     let peer = crate::hole::find_peer(tracker, device_id)
         .await
         .context("the other end could not be found")?;
     let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
         .context("the socket for the direct connection could not be opened")?;
-    let hole = crate::hole::punch(socket, peer)
-        .context("the direct connection could not be made")?;
+    let hole =
+        crate::hole::punch(socket, peer).context("the direct connection could not be made")?;
 
     let client_config = client_config()?;
     let mut endpoint = client_endpoint(hole.socket)?;
@@ -365,18 +360,13 @@ pub async fn listen_direct(
         .context("the other end did not arrive")?;
 
     let server_config = server_config()?;
-    let mut endpoint = server_endpoint(hole.socket, server_config)?;
+    let endpoint = server_endpoint(hole.socket, server_config)?;
     let connection = accept(&endpoint, timeout).await?;
     open(connection, Side::Responder).await
 }
 
 /// Tell the tracker which device this is and where it listens.
-async fn register(
-    tracker: &str,
-    device_id: &str,
-    device_name: &str,
-    port: u16,
-) -> Result<()> {
+async fn register(tracker: &str, device_id: &str, device_name: &str, port: u16) -> Result<()> {
     let body = serde_json::json!({
         "id": device_id,
         "name": device_name,
@@ -403,14 +393,13 @@ async fn register(
 
 /// The TLS settings of the side that connects.
 fn client_config() -> Result<quinn::ClientConfig> {
-    let mut client_config = ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .context("TLS 1.3 is not available")?
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
-    .with_no_client_auth();
+    let mut client_config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .context("TLS 1.3 is not available")?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
+            .with_no_client_auth();
 
     client_config.enable_early_data = true;
 
@@ -440,9 +429,9 @@ fn server_config() -> Result<quinn::ServerConfig> {
     let certificate = CertificateDer::from(keys.0);
     let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(keys.1));
 
-    let mut server_config = rustls::ServerConfig::builder_with_provider(
-        Arc::new(rustls::crypto::ring::default_provider()),
-    )
+    let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
     .with_protocol_versions(&[&rustls::version::TLS13])
     .context("TLS 1.3 is not available")?
     .with_no_client_auth()
@@ -487,10 +476,7 @@ fn client_endpoint(socket: std::net::UdpSocket) -> Result<Endpoint> {
 }
 
 /// A QUIC endpoint that waits for the other end.
-fn server_endpoint(
-    socket: std::net::UdpSocket,
-    config: quinn::ServerConfig,
-) -> Result<Endpoint> {
+fn server_endpoint(socket: std::net::UdpSocket, config: quinn::ServerConfig) -> Result<Endpoint> {
     let wrapped = quinn::Runtime::wrap_udp_socket(&quinn::TokioRuntime, socket)
         .context("the socket could not be handed over")?;
     let endpoint = Endpoint::new_with_abstract_socket(
@@ -524,10 +510,7 @@ pub async fn accept(endpoint: &Endpoint, timeout: std::time::Duration) -> Result
 ///
 /// The control channel is the first stream; the video goes over
 /// datagrams, which need no stream of their own.
-pub async fn open(
-    connection: Connection,
-    side: Side,
-) -> Result<(Sender, Receiver)> {
+pub async fn open(connection: Connection, side: Side) -> Result<(Sender, Receiver)> {
     // One two-way stream carries the control messages in both
     // directions.  The side that starts the connection opens it and the
     // other side accepts it; both then write on that one stream, which
@@ -563,16 +546,11 @@ pub async fn open(
 
     // The datagrams arrive on the connection, so somebody has to read
     // them and put them into the channel.
-    let mut pump_connection = connection.clone();
+    let pump_connection = connection.clone();
     tokio::spawn(async move {
-        loop {
-            match pump_connection.read_datagram().await {
-                Ok(data) => {
-                    if video_send.send(data).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(data) = pump_connection.read_datagram().await {
+            if video_send.send(data).is_err() {
+                break;
             }
         }
     });
@@ -614,7 +592,8 @@ pub fn split_video(frame: &[u8]) -> Vec<Bytes> {
     if frame.len() <= CHUNK_SIZE {
         return vec![Bytes::copy_from_slice(frame)];
     }
-    frame.chunks(CHUNK_SIZE)
+    frame
+        .chunks(CHUNK_SIZE)
         .map(Bytes::copy_from_slice)
         .collect()
 }
@@ -701,9 +680,9 @@ mod tests {
             open(client, Side::Initiator),
             open(server_connection, Side::Responder),
         );
-        let (mut client_sender, mut client_receiver) =
+        let (client_sender, mut client_receiver) =
             client_side.expect("the client channels must open");
-        let (mut server_sender, mut server_receiver) =
+        let (server_sender, mut server_receiver) =
             server_side.expect("the server channels must open");
 
         // A control message must arrive, in order, whole.

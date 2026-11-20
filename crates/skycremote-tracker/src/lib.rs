@@ -67,9 +67,6 @@ struct RegisterReply {
 struct AddressQuestion {
     /// The id of the asking device.
     id: String,
-    /// A random token, so an outsider cannot ask for someone else's
-    /// address by guessing.
-    token: String,
 }
 
 /// The answer: this is where your packets come from.
@@ -117,7 +114,10 @@ async fn register(
     ConnectInfo(from): ConnectInfo<SocketAddr>,
     Json(body): Json<Register>,
 ) -> Json<RegisterReply> {
-    let mut devices = inner.devices.lock().expect("the device table is not poisoned");
+    let mut devices = inner
+        .devices
+        .lock()
+        .expect("the device table is not poisoned");
     // The address the packets came from carries the address of the
     // machine; the port is the one the device said it listens on, which
     // is not the same as the port the packet came from.
@@ -142,7 +142,10 @@ async fn address(
     ConnectInfo(from): ConnectInfo<SocketAddr>,
     Json(body): Json<AddressQuestion>,
 ) -> Json<AddressAnswer> {
-    let mut devices = inner.devices.lock().expect("the device table is not poisoned");
+    let mut devices = inner
+        .devices
+        .lock()
+        .expect("the device table is not poisoned");
     let now = now_ms();
     // The device that asks is online, whatever it told before.
     devices
@@ -158,11 +161,11 @@ async fn address(
 }
 
 /// Tell a device where the other end is.
-async fn peer(
-    State(inner): State<Inner>,
-    Json(body): Json<PeerQuestion>,
-) -> Json<PeerAnswer> {
-    let mut devices = inner.devices.lock().expect("the device table is not poisoned");
+async fn peer(State(inner): State<Inner>, Json(body): Json<PeerQuestion>) -> Json<PeerAnswer> {
+    let mut devices = inner
+        .devices
+        .lock()
+        .expect("the device table is not poisoned");
     // A device that has not said anything for two minutes is gone.
     let stale = now_ms().saturating_sub(120_000);
     devices.retain(|_, device| device.last_seen > stale);
@@ -229,7 +232,11 @@ mod tests {
                 },
             );
         }
-        let answer = peer(State(inner.clone()), Json(PeerQuestion { id: "abc".into() })).await;
+        let answer = peer(
+            State(inner.clone()),
+            Json(PeerQuestion { id: "abc".into() }),
+        )
+        .await;
         let body = answer.0;
         assert!(body.online);
         assert_eq!(body.address.port(), 21116);
@@ -260,6 +267,9 @@ mod tests {
             );
         }
         let answer = peer(State(inner), Json(PeerQuestion { id: "old".into() })).await;
-        assert!(!answer.0.online, "a device that is silent for five minutes is gone");
+        assert!(
+            !answer.0.online,
+            "a device that is silent for five minutes is gone"
+        );
     }
 }

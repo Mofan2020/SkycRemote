@@ -143,10 +143,15 @@ impl Settings {
     fn save(&self) -> Result<()> {
         let path = Self::path();
         if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)
-                .with_context(|| format!("the settings folder could not be made: {}", folder.display()))?;
+            std::fs::create_dir_all(folder).with_context(|| {
+                format!(
+                    "the settings folder could not be made: {}",
+                    folder.display()
+                )
+            })?;
         }
-        let text = serde_json::to_string_pretty(self).context("the settings could not be written")?;
+        let text =
+            serde_json::to_string_pretty(self).context("the settings could not be written")?;
         std::fs::write(&path, text)
             .with_context(|| format!("the settings could not be written: {}", path.display()))?;
         Ok(())
@@ -288,15 +293,13 @@ impl Backend {
             let mut assembler = FrameAssembler::new();
             loop {
                 match receiver.recv().await {
-                    transport::Incoming::Video(datagram) => {
-                        match assembler.push(&datagram) {
-                            Ok(Some(picture)) => {
-                                push_picture(&out, &picture);
-                            }
-                            Ok(None) => {}
-                            Err(_) => {}
+                    transport::Incoming::Video(datagram) => match assembler.push(&datagram) {
+                        Ok(Some(picture)) => {
+                            push_picture(&out, &picture);
                         }
-                    }
+                        Ok(None) => {}
+                        Err(_) => {}
+                    },
                     transport::Incoming::Control(bytes) => {
                         let Ok(text) = std::str::from_utf8(&bytes) else {
                             continue;
@@ -308,7 +311,9 @@ impl Backend {
                             Message::Screens { screens } => {
                                 let screens: Vec<Value> = screens
                                     .iter()
-                                    .map(|screen| serde_json::to_value(screen).unwrap_or(Value::Null))
+                                    .map(|screen| {
+                                        serde_json::to_value(screen).unwrap_or(Value::Null)
+                                    })
                                     .collect();
                                 emit_to(&out, "screens", json!({ "screens": screens }));
                             }
@@ -329,7 +334,11 @@ impl Backend {
                         }
                     }
                     transport::Incoming::Closed => {
-                        emit_to(&out, "disconnect", json!({ "reason": "the other end hung up" }));
+                        emit_to(
+                            &out,
+                            "disconnect",
+                            json!({ "reason": "the other end hung up" }),
+                        );
                         break;
                     }
                 }
@@ -363,7 +372,8 @@ impl Backend {
         let index = payload
             .get("index")
             .and_then(|value| value.as_u64())
-            .ok_or_else(|| anyhow!("the index of the screen is missing"))? as u32;
+            .ok_or_else(|| anyhow!("the index of the screen is missing"))?
+            as u32;
         self.send(&Message::SwitchScreen { index }).await?;
         Ok(json!({ "ok": true, "index": index }))
     }
@@ -419,7 +429,7 @@ impl Backend {
     /// before.
     async fn list_devices(&mut self) -> Result<Value> {
         let mut devices = Vec::new();
-        let mut id = self.settings.device_id.clone();
+        let id = self.settings.device_id.clone();
         if !id.is_empty() {
             devices.push(json!({
                 "id": id,
@@ -506,10 +516,7 @@ fn emit_to(out: &ChannelSender<Out>, name: &str, payload: Value) {
 /// The bytes are written as text, because that is all that can cross
 /// from here into the page.
 fn push_picture(out: &ChannelSender<Out>, picture: &skycremote_core::encode::EncodedFrame) {
-    let encoded = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &picture.data,
-    );
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &picture.data);
     emit_to(
         out,
         "frame",

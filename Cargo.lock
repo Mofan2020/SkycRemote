@@ -1469,28 +1469,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
-name = "futures"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
- "futures-sink",
 ]
 
 [[package]]
@@ -1545,11 +1529,9 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
- "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
- "futures-sink",
  "futures-task",
  "memchr",
  "pin-project-lite",
@@ -4386,10 +4368,8 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "core-foundation",
- "core-graphics",
  "display-info",
  "ffmpeg-next",
- "futures",
  "getrandom 0.3.4",
  "hkdf",
  "image",
@@ -4411,7 +4391,6 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "uuid",
  "windows",
  "windows-core 0.100.0",
  "x25519-dalek",
@@ -4428,12 +4407,9 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tokio",
  "tower",
  "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -5192,7 +5168,6 @@ version = "1.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
 dependencies = [
- "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

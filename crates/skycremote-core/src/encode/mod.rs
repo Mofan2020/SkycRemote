@@ -133,7 +133,7 @@ impl EncoderConfig {
         // an odd dimension has no valid representation.  Rounding silently
         // would make the encoded picture a different size from the frames
         // the caller keeps feeding in.
-        if self.width % 2 != 0 || self.height % 2 != 0 {
+        if !self.width.is_multiple_of(2) || !self.height.is_multiple_of(2) {
             return Err(EncodeError::InvalidSettings(format!(
                 "the picture is {}x{}; H.264 4:2:0 needs both dimensions even",
                 self.width, self.height
@@ -484,7 +484,7 @@ fn skip_start_code(data: &[u8]) -> Option<&[u8]> {
 
 /// The software backend, and the RGBA-to-YUV conversion it needs.
 mod software {
-    use super::{EncoderConfig, EncodeError};
+    use super::{EncodeError, EncoderConfig};
     use crate::capture::Frame;
 
     use openh264::encoder::{
@@ -517,9 +517,7 @@ mod software {
                 // keeps the session log clean.
                 .adaptive_quantization(false)
                 .background_detection(false)
-                .intra_frame_period(IntraFramePeriod::from_num_frames(
-                    config.keyframe_interval,
-                ));
+                .intra_frame_period(IntraFramePeriod::from_num_frames(config.keyframe_interval));
 
             let encoder = OpenH264Encoder::with_api_config(OpenH264API::from_source(), native)
                 .map_err(|err| EncodeError::BackendUnavailable(err.to_string()))?;
@@ -562,4 +560,3 @@ mod software {
         }
     }
 }
-

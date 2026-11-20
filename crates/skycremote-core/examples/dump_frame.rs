@@ -21,7 +21,8 @@ fn main() -> anyhow::Result<()> {
         for x in 0..width {
             let red = (x * 255 / width) as u8;
             let green = (y * 255 / height) as u8;
-            let blue = if x > width / 3 && x < width * 2 / 3 && y > height / 3 && y < height * 2 / 3 {
+            let blue = if x > width / 3 && x < width * 2 / 3 && y > height / 3 && y < height * 2 / 3
+            {
                 255
             } else {
                 40

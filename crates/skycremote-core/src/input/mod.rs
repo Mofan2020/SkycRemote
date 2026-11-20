@@ -124,8 +124,7 @@ pub trait Injector: Send {
     ///
     /// 坐标是捕获那张图里的像素；注入器知道那块屏幕在桌面上的位置，
     /// 自己换算成系统要的单位。
-    fn inject(&mut self, event: &InputEvent, screen: &Screen)
-        -> Result<(), InputError>;
+    fn inject(&mut self, event: &InputEvent, screen: &Screen) -> Result<(), InputError>;
 }
 
 /// 按住不放的修饰键。

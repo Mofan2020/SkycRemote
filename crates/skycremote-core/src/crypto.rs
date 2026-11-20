@@ -165,12 +165,20 @@ mod tests {
     fn two_ends_derive_the_same_key() {
         let a = KeyPair::generate();
         let b = KeyPair::generate();
-        let key_a = a.derive(&b.public_bytes()).expect("the key must be derivable");
-        let key_b = b.derive(&a.public_bytes()).expect("the key must be derivable");
+        let key_a = a
+            .derive(&b.public_bytes())
+            .expect("the key must be derivable");
+        let key_b = b
+            .derive(&a.public_bytes())
+            .expect("the key must be derivable");
 
         let message = b"the picture of a screen";
-        let encrypted = key_a.encrypt(message).expect("the message must be encrypted");
-        let decrypted = key_b.decrypt(&encrypted).expect("the message must come back");
+        let encrypted = key_a
+            .encrypt(message)
+            .expect("the message must be encrypted");
+        let decrypted = key_b
+            .decrypt(&encrypted)
+            .expect("the message must come back");
         assert_eq!(decrypted, message);
     }
 

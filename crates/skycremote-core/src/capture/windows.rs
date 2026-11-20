@@ -15,35 +15,11 @@
 //! declare per-monitor awareness in its manifest for the pixels here to
 //! mean what the panel really shows.
 
-use super::Screen;
-
-/// Builds a [`Screen`] from what a Windows backend reported.
+/// Whether the size the backend reports is already in pixels.
 ///
-/// `width` and `height` are `dmPelsWidth`/`dmPelsHeight`, which are
-/// physical pixels; they are passed through untouched.  `scale_factor` is
-/// kept because input coordinates arrive in logical units and must be
-/// multiplied by it to land on the right pixel.
-pub fn make_screen(
-    index: usize,
-    name: String,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-    primary: bool,
-    origin_x: f64,
-    origin_y: f64,
-) -> Screen {
-    Screen {
-        index,
-        name,
-        width,
-        height,
-        scale_factor,
-        primary,
-        origin_x,
-        origin_y,
-    }
-}
+/// `dmPelsWidth` is the number of physical pixels the panel has, so it
+/// must not be multiplied by the scale factor again.
+pub const SIZE_IS_PIXELS: bool = true;
 
 /// Whether a reported size looks like it came out of a virtualised
 /// (non-DPI-aware) desktop.
@@ -66,6 +42,7 @@ pub fn looks_virtualised(reported_width: u32, physical_width: u32, scale_factor:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{make_screen, ScreenSpec};
 
     #[test]
     fn a_windows_size_is_already_in_pixels_and_must_not_be_scaled() {
@@ -73,7 +50,17 @@ mod tests {
         // the image the GDI capture returns.  Multiplying by 2.0 here —
         // which is what the macOS and Linux paths must do — would claim a
         // 7680-pixel-wide screen that does not exist.
-        let screen = make_screen(0, "\\\\.\\DISPLAY1".into(), 3840, 2160, 2.0, true, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "\\\\.\\DISPLAY1".into(),
+            width: 3840,
+            height: 2160,
+            scale_factor: 2.0,
+            primary: true,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: true,
+        });
         assert_eq!(screen.width, 3840);
         assert_eq!(screen.height, 2160);
         assert_eq!(screen.scale_factor, 2.0);
@@ -81,7 +68,17 @@ mod tests {
 
     #[test]
     fn a_one_x_screen_passes_through() {
-        let screen = make_screen(1, "\\\\.\\DISPLAY2".into(), 1920, 1080, 1.0, false, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 1,
+            name: "\\\\.\\DISPLAY2".into(),
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: true,
+        });
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
     }
@@ -103,7 +100,17 @@ mod tests {
 
     #[test]
     fn the_primary_flag_survives_the_conversion() {
-        let screen = make_screen(0, "primary".into(), 2560, 1440, 1.5, true, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "primary".into(),
+            width: 2560,
+            height: 1440,
+            scale_factor: 1.5,
+            primary: true,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: true,
+        });
         assert!(screen.primary);
         assert_eq!(screen.width, 2560);
     }

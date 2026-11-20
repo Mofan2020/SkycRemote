@@ -19,10 +19,21 @@ fn main() {
     }
 
     println!("== display-info ==");
-    for (index, info) in display_info::DisplayInfo::all().unwrap_or_default().iter().enumerate() {
+    for (index, info) in display_info::DisplayInfo::all()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         println!(
             "  {index}: id={} {}x{} at ({}, {}) scale={} primary={} name={:?}",
-            info.id, info.width, info.height, info.x, info.y, info.scale_factor, info.is_primary, info.name
+            info.id,
+            info.width,
+            info.height,
+            info.x,
+            info.y,
+            info.scale_factor,
+            info.is_primary,
+            info.name
         );
     }
 }

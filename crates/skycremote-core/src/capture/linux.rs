@@ -15,7 +15,14 @@
 //! physical resolution, so the two are reconciled the same way as on
 //! macOS — by multiplying back.
 
-use super::{physical_size, CaptureError, Screen};
+/// Whether the size the backend reports is already in pixels.
+///
+/// XRandR gives the pixel size of the framebuffer, but `xcap` divides it
+/// by the desktop scale factor, so what arrives here is the logical size
+/// and the scale factor still has to be applied to get the pixel count.
+pub const SIZE_IS_PIXELS: bool = false;
+
+use super::CaptureError;
 
 /// Which display server the session is running on.
 ///
@@ -109,38 +116,10 @@ pub fn explain_error(message: &str) -> Option<CaptureError> {
     }
 }
 
-/// Builds a [`Screen`] from what a Linux backend reported.
-///
-/// `xcap` divides the XRandR pixel size by the desktop scale factor, so
-/// `width`/`height` arrive as logical units and have to be turned back
-/// into the pixels the capture will actually contain.
-pub fn make_screen(
-    index: usize,
-    name: String,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-    primary: bool,
-    origin_x: f64,
-    origin_y: f64,
-) -> Screen {
-    let (pixel_width, pixel_height) = physical_size(width, height, scale_factor);
-
-    Screen {
-        index,
-        name,
-        width: pixel_width,
-        height: pixel_height,
-        scale_factor,
-        primary,
-        origin_x,
-        origin_y,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{make_screen, ScreenSpec};
 
     #[test]
     fn a_wayland_socket_wins_over_xwayland() {
@@ -192,14 +171,34 @@ mod tests {
     #[test]
     fn a_scaled_screen_reports_the_pixels_the_capture_will_have() {
         // A HiDPI X11 desktop at 2x: xcap answers 1280x800 logical.
-        let screen = make_screen(0, "eDP-1".into(), 1280, 800, 2.0, true, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "eDP-1".into(),
+            width: 1280,
+            height: 800,
+            scale_factor: 2.0,
+            primary: true,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 2560);
         assert_eq!(screen.height, 1600);
     }
 
     #[test]
     fn an_unscaled_screen_is_left_alone() {
-        let screen = make_screen(0, "HDMI-1".into(), 1920, 1080, 1.0, false, 0.0, 0.0);
+        let screen = make_screen(ScreenSpec {
+            index: 0,
+            name: "HDMI-1".into(),
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            size_is_pixels: false,
+        });
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
     }

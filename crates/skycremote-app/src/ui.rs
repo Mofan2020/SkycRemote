@@ -194,14 +194,14 @@ pub fn run(options: Options) -> Result<()> {
     let loaded_flag = Arc::clone(&page_loaded);
 
     let builder = WebViewBuilder::new()
-        .with_initialization_script(&bootstrap())
+        .with_initialization_script(bootstrap())
         .with_on_page_load_handler(move |event, _url| {
             if matches!(event, PageLoadEvent::Finished) {
                 loaded_flag.store(true, Ordering::SeqCst);
             }
         })
         .with_ipc_handler(move |request| {
-            if let Some(ui_request) = UiRequest::parse(&request.body()) {
+            if let Some(ui_request) = UiRequest::parse(request.body()) {
                 let _ = command_tx.send(ui_request);
             }
         });
@@ -234,9 +234,8 @@ pub fn run(options: Options) -> Result<()> {
         if probe && !probe_asked && page_loaded.load(Ordering::SeqCst) {
             probe_asked = true;
             eprintln!("PROBE: 頁面已加載，開始自檢");
-            let _ = webview.evaluate_script(
-                "window.__SKYCREMOTE_NATIVE__.request('listScreens', '{}')",
-            );
+            let _ = webview
+                .evaluate_script("window.__SKYCREMOTE_NATIVE__.request('listScreens', '{}')");
         }
 
         if let Event::WindowEvent {
@@ -251,10 +250,8 @@ pub fn run(options: Options) -> Result<()> {
         loop {
             match out_rx.try_recv() {
                 Ok(Out::Reply { id, ok, value }) => {
-                    let script = format!(
-                        "window.__skycremote_resolve__({}, {}, {})",
-                        id, ok, value
-                    );
+                    let script =
+                        format!("window.__skycremote_resolve__({}, {}, {})", id, ok, value);
                     let _ = webview.evaluate_script(&script);
                     if probe {
                         eprintln!("PROBE: 回覆 id={} ok={} {}", id, ok, value);
@@ -275,6 +272,5 @@ pub fn run(options: Options) -> Result<()> {
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
-    });
-    Ok(())
+    })
 }

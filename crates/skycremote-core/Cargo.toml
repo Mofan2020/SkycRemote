@@ -14,9 +14,7 @@ serde_json.workspace = true
 bytes.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-futures.workspace = true
 rand.workspace = true
-uuid.workspace = true
 base64.workspace = true
 sha2.workspace = true
 hkdf.workspace = true
@@ -59,7 +57,6 @@ ffmpeg = ["dep:ffmpeg-next"]
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
-core-graphics = "0.25"
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]

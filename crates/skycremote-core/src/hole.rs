@@ -37,8 +37,6 @@ const PUNCH_INTERVAL: Duration = Duration::from_millis(250);
 pub struct AddressQuestion {
     /// The id of the asking device.
     pub id: String,
-    /// A random token, so the answer cannot be guessed by an outsider.
-    pub token: String,
 }
 
 /// The answer of the tracker: this is where your packets come from.
@@ -91,14 +89,9 @@ pub struct Hole {
 ///
 /// The tracker answers with the address the question came from, which is
 /// the address the other end will have to send to.
-pub async fn discover_address(
-    tracker: &str,
-    device_id: &str,
-) -> Result<SocketAddr, HoleError> {
-    let token = uuid::Uuid::new_v4().to_string();
+pub async fn discover_address(tracker: &str, device_id: &str) -> Result<SocketAddr, HoleError> {
     let question = AddressQuestion {
         id: device_id.to_string(),
-        token,
     };
     let client = reqwest::Client::builder()
         .timeout(ADDRESS_TIMEOUT)
@@ -117,10 +110,7 @@ pub async fn discover_address(
 }
 
 /// Ask the tracker where the other end is.
-pub async fn find_peer(
-    tracker: &str,
-    device_id: &str,
-) -> Result<SocketAddr, HoleError> {
+pub async fn find_peer(tracker: &str, device_id: &str) -> Result<SocketAddr, HoleError> {
     let question = PeerQuestion {
         id: device_id.to_string(),
     };
@@ -158,25 +148,21 @@ pub fn punch(socket: std::net::UdpSocket, peer: SocketAddr) -> Result<Hole, Hole
     let mut attempt = 0u32;
     while attempt < PUNCH_ATTEMPTS && Instant::now() < deadline {
         // A byte that both ends recognise: the answer carries it back.
-        let _ = socket.send_to(&PUNCH_MARKER, peer);
+        let _ = socket.send_to(PUNCH_MARKER, peer);
         attempt += 1;
 
         // Is there anything waiting already?
         let mut buffer = [0u8; 64];
         match socket.recv_from(&mut buffer) {
             Ok((read, from)) => {
-                if read >= PUNCH_MARKER.len()
-                    && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER
-                {
+                if read >= PUNCH_MARKER.len() && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER {
                     // The other end started the hole; answer it so it
                     // learns the way back.
                     let _ = socket.send_to(PUNCH_REPLY, from);
                     socket.set_nonblocking(true).ok();
                     return Ok(Hole { peer: from, socket });
                 }
-                if read >= PUNCH_REPLY.len()
-                    && &buffer[..PUNCH_REPLY.len()] == PUNCH_REPLY
-                {
+                if read >= PUNCH_REPLY.len() && &buffer[..PUNCH_REPLY.len()] == PUNCH_REPLY {
                     socket.set_nonblocking(true).ok();
                     return Ok(Hole { peer, socket });
                 }
@@ -196,18 +182,13 @@ pub fn punch(socket: std::net::UdpSocket, peer: SocketAddr) -> Result<Hole, Hole
 /// arrives, and answers that packet so the other end finds the way
 /// back.  Both sides punch at the same time, so the order does not
 /// matter.
-pub fn punch_wait(
-    socket: std::net::UdpSocket,
-    deadline: Instant,
-) -> Result<Hole, HoleError> {
+pub fn punch_wait(socket: std::net::UdpSocket, deadline: Instant) -> Result<Hole, HoleError> {
     socket.set_read_timeout(Some(PUNCH_INTERVAL)).ok();
     let mut buffer = [0u8; 64];
     while Instant::now() < deadline {
         match socket.recv_from(&mut buffer) {
             Ok((read, from)) => {
-                if read >= PUNCH_MARKER.len()
-                    && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER
-                {
+                if read >= PUNCH_MARKER.len() && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER {
                     let _ = socket.send_to(PUNCH_REPLY, from);
                     socket.set_nonblocking(true).ok();
                     return Ok(Hole { peer: from, socket });
@@ -244,13 +225,9 @@ mod tests {
     }
 
     #[test]
-    fn the_question_carries_the_device_id_and_a_token() {
-        let question = AddressQuestion {
-            id: "abc".into(),
-            token: "xyz".into(),
-        };
+    fn the_question_carries_the_device_id() {
+        let question = AddressQuestion { id: "abc".into() };
         let text = serde_json::to_string(&question).expect("serialisable");
         assert!(text.contains("abc"));
-        assert!(text.contains("xyz"));
     }
 }

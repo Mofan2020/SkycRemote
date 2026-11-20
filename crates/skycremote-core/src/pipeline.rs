@@ -18,13 +18,12 @@
 //! worse than a desktop that is smooth.
 
 use crate::capture::{capture_frame, FramePacer, Screen};
-use crate::encode::{EncodedFrame, EncodeError, Encoder, EncoderConfig};
+use crate::encode::{EncodeError, EncodedFrame, Encoder, EncoderConfig};
 use crate::session::{split_frame, FrameAssembler};
 use crate::transport::{Incoming, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 
 // There is no queue, and that is on purpose.  A picture that is waiting
 // is a picture of something that has already changed, so the only useful
@@ -109,9 +108,9 @@ impl ScreenSource {
             config.fps = fps;
         }
 
-        let first = capture_frame(screen.index)
-            .map_err(|err| PipelineError::Capture(err.to_string()))?;
-        let encoder = Encoder::new(config.clone())?;
+        let first =
+            capture_frame(screen.index).map_err(|err| PipelineError::Capture(err.to_string()))?;
+        let encoder = Encoder::new(config)?;
 
         let latest = Arc::new(LatestPicture {
             slot: std::sync::Mutex::new(None),
@@ -126,7 +125,9 @@ impl ScreenSource {
             .spawn(move || {
                 run_capture(screen, encoder, first, fps, thread_latest, thread_stop);
             })
-            .map_err(|err| PipelineError::Capture(format!("the capture thread did not start: {err}")))?;
+            .map_err(|err| {
+                PipelineError::Capture(format!("the capture thread did not start: {err}"))
+            })?;
 
         Ok(Self { latest, stop })
     }
@@ -272,13 +273,11 @@ pub async fn next_picture(
 ) -> Option<EncodedFrame> {
     loop {
         match receiver.recv().await {
-            Incoming::Video(datagram) => {
-                match assembler.push(&datagram) {
-                    Ok(Some(picture)) => return Some(picture),
-                    Ok(None) => continue,
-                    Err(_) => continue,
-                }
-            }
+            Incoming::Video(datagram) => match assembler.push(&datagram) {
+                Ok(Some(picture)) => return Some(picture),
+                Ok(None) => continue,
+                Err(_) => continue,
+            },
             // A control message while waiting for a picture: the caller
             // handles those on its own loop, so this one is dropped.
             Incoming::Control(_) => continue,
@@ -303,7 +302,10 @@ mod tests {
             height: 1080,
         };
         let pieces = crate::session::split_frame(&picture, 1);
-        assert!(pieces.is_err(), "a picture with too many pieces must be refused");
+        assert!(
+            pieces.is_err(),
+            "a picture with too many pieces must be refused"
+        );
     }
 
     #[tokio::test]
