@@ -119,7 +119,11 @@ pub struct ScreenInfo {
 }
 
 /// What the control end does with the keyboard and the mouse.
+///
+/// The kind is written into the object itself, so that the browser
+/// side can read it without knowing the order of the variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum InputEvent {
     /// A key went down.
     KeyDown {

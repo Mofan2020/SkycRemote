@@ -310,6 +310,192 @@ pub async fn connect(_address: SocketAddr) -> Result<Endpoint> {
     Ok(endpoint)
 }
 
+/// Open a port to the other end, punching through the NAT on the way.
+///
+/// The socket that punches the hole is the socket the session then runs
+/// on.  A NAT that has let one packet through will let the rest of the
+/// flow through as well, but only if it is the same port number, so
+/// the hole and the session have to share one socket.
+pub async fn connect_direct(
+    tracker: &str,
+    device_id: &str,
+) -> Result<(Sender, Receiver)> {
+    let peer = crate::hole::find_peer(tracker, device_id)
+        .await
+        .context("the other end could not be found")?;
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .context("the socket for the direct connection could not be opened")?;
+    let hole = crate::hole::punch(socket, peer)
+        .context("the direct connection could not be made")?;
+
+    let client_config = client_config()?;
+    let mut endpoint = client_endpoint(hole.socket)?;
+    endpoint.set_default_client_config(client_config);
+    let connecting = endpoint
+        .connect(hole.peer, "skycremote")
+        .context("the direct connection could not be started")?;
+    let connection = connecting
+        .await
+        .context("the direct connection could not be made")?;
+    open(connection, Side::Initiator).await
+}
+
+/// Wait for the other end on a port that was punched open.
+///
+/// The other end has to know where to send, so this registers with the
+/// tracker first and only then waits.
+pub async fn listen_direct(
+    tracker: &str,
+    device_id: &str,
+    device_name: &str,
+    port: u16,
+    timeout: std::time::Duration,
+) -> Result<(Sender, Receiver)> {
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        .context("the port could not be opened")?;
+    register(tracker, device_id, device_name, port).await?;
+    let hole = crate::hole::punch_wait(socket, std::time::Instant::now() + timeout)
+        .context("the other end did not arrive")?;
+
+    let server_config = server_config()?;
+    let mut endpoint = server_endpoint(hole.socket, server_config)?;
+    let connection = accept(&endpoint, timeout).await?;
+    open(connection, Side::Responder).await
+}
+
+/// Tell the tracker which device this is and where it listens.
+async fn register(
+    tracker: &str,
+    device_id: &str,
+    device_name: &str,
+    port: u16,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "id": device_id,
+        "name": device_name,
+        "port": port,
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("the tracker could not be reached")?;
+    let reply = client
+        .post(format!("{tracker}/register"))
+        .json(&body)
+        .send()
+        .await
+        .context("the tracker could not be reached")?
+        .json::<serde_json::Value>()
+        .await
+        .context("the tracker did not answer")?;
+    if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        anyhow::bail!("the tracker did not accept the registration");
+    }
+    Ok(())
+}
+
+/// The TLS settings of the side that connects.
+fn client_config() -> Result<quinn::ClientConfig> {
+    let mut client_config = ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .context("TLS 1.3 is not available")?
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
+    .with_no_client_auth();
+
+    client_config.enable_early_data = true;
+
+    let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(client_config))
+        .context("the client configuration could not be used")?;
+    let mut config = quinn::ClientConfig::new(Arc::new(quic_config));
+
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_uni_streams(0u32.into());
+    transport.max_concurrent_bidi_streams(1u32.into());
+    transport.max_idle_timeout(Some(
+        std::time::Duration::from_secs(30)
+            .try_into()
+            .expect("thirty seconds fits"),
+    ));
+    config.transport_config(Arc::new(transport));
+    Ok(config)
+}
+
+/// The TLS settings of the side that waits.
+///
+/// The same self-signed certificate as the ordinary listener uses, so
+/// that a session looks the same to the other end no matter how it was
+/// set up.
+fn server_config() -> Result<quinn::ServerConfig> {
+    let keys = self_signed_keys()?;
+    let certificate = CertificateDer::from(keys.0);
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(keys.1));
+
+    let mut server_config = rustls::ServerConfig::builder_with_provider(
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .context("TLS 1.3 is not available")?
+    .with_no_client_auth()
+    .with_single_cert(vec![certificate], private_key)
+    .context("the certificate could not be used")?;
+
+    server_config.max_early_data_size = u32::MAX;
+
+    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(server_config))
+        .context("the server configuration could not be used")?;
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_uni_streams(0u32.into());
+    transport.max_concurrent_bidi_streams(1u32.into());
+    transport.max_idle_timeout(Some(
+        std::time::Duration::from_secs(30)
+            .try_into()
+            .expect("thirty seconds fits"),
+    ));
+    transport.datagram_receive_buffer_size(Some(16 * 1024 * 1024));
+    transport.datagram_send_buffer_size(16 * 1024 * 1024);
+    transport.stream_receive_window(quinn::VarInt::from_u32(1024 * 1024));
+    transport.send_window(16 * 1024 * 1024);
+    config.transport_config(Arc::new(transport));
+    Ok(config)
+}
+
+/// A QUIC endpoint on a socket that already exists.
+fn client_endpoint(socket: std::net::UdpSocket) -> Result<Endpoint> {
+    let wrapped = quinn::Runtime::wrap_udp_socket(&quinn::TokioRuntime, socket)
+        .context("the socket could not be handed over")?;
+    let mut endpoint = Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        None,
+        wrapped,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .context("the endpoint could not be built")?;
+    endpoint.set_default_client_config(client_config()?);
+    Ok(endpoint)
+}
+
+/// A QUIC endpoint that waits for the other end.
+fn server_endpoint(
+    socket: std::net::UdpSocket,
+    config: quinn::ServerConfig,
+) -> Result<Endpoint> {
+    let wrapped = quinn::Runtime::wrap_udp_socket(&quinn::TokioRuntime, socket)
+        .context("the socket could not be handed over")?;
+    let endpoint = Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(config),
+        wrapped,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .context("the endpoint could not be built")?;
+    Ok(endpoint)
+}
+
 /// Wait for the other end to come in, with a deadline.
 ///
 /// The deadline matters: without it a machine that waits for a

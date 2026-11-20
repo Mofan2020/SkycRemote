@@ -150,6 +150,11 @@ pub async fn find_peer(
 /// the traffic through once it has seen a packet from us.
 pub fn punch(socket: std::net::UdpSocket, peer: SocketAddr) -> Result<Hole, HoleError> {
     let deadline = Instant::now() + ADDRESS_TIMEOUT;
+    // The socket is blocking here, with a read timeout, so that a
+    // waiting recv_from actually waits.  It is set back to
+    // non-blocking at the end, because the network library that takes
+    // over the socket wants it that way.
+    socket.set_read_timeout(Some(PUNCH_INTERVAL)).ok();
     let mut attempt = 0u32;
     while attempt < PUNCH_ATTEMPTS && Instant::now() < deadline {
         // A byte that both ends recognise: the answer carries it back.
@@ -158,12 +163,60 @@ pub fn punch(socket: std::net::UdpSocket, peer: SocketAddr) -> Result<Hole, Hole
 
         // Is there anything waiting already?
         let mut buffer = [0u8; 64];
-        if let Ok((read, from)) = socket.recv_from(&mut buffer) {
-            if read > 0 && from.ip() == peer.ip() {
-                return Ok(Hole { peer, socket });
+        match socket.recv_from(&mut buffer) {
+            Ok((read, from)) => {
+                if read >= PUNCH_MARKER.len()
+                    && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER
+                {
+                    // The other end started the hole; answer it so it
+                    // learns the way back.
+                    let _ = socket.send_to(PUNCH_REPLY, from);
+                    socket.set_nonblocking(true).ok();
+                    return Ok(Hole { peer: from, socket });
+                }
+                if read >= PUNCH_REPLY.len()
+                    && &buffer[..PUNCH_REPLY.len()] == PUNCH_REPLY
+                {
+                    socket.set_nonblocking(true).ok();
+                    return Ok(Hole { peer, socket });
+                }
+            }
+            Err(_) => {
+                // A timeout, or nothing there yet.  Keep punching.
             }
         }
-        std::thread::sleep(PUNCH_INTERVAL);
+    }
+    Err(HoleError::CannotPunch)
+}
+
+/// Wait for the other end to punch a hole towards us.
+///
+/// This is the other half of [`punch`].  The side that waits does not
+/// know the other's address yet; it learns it from the packet that
+/// arrives, and answers that packet so the other end finds the way
+/// back.  Both sides punch at the same time, so the order does not
+/// matter.
+pub fn punch_wait(
+    socket: std::net::UdpSocket,
+    deadline: Instant,
+) -> Result<Hole, HoleError> {
+    socket.set_read_timeout(Some(PUNCH_INTERVAL)).ok();
+    let mut buffer = [0u8; 64];
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut buffer) {
+            Ok((read, from)) => {
+                if read >= PUNCH_MARKER.len()
+                    && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER
+                {
+                    let _ = socket.send_to(PUNCH_REPLY, from);
+                    socket.set_nonblocking(true).ok();
+                    return Ok(Hole { peer: from, socket });
+                }
+            }
+            Err(_) => {
+                // Nothing yet.  Keep waiting.
+            }
+        }
     }
     Err(HoleError::CannotPunch)
 }
