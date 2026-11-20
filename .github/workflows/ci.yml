@@ -62,13 +62,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check the workflow files
-        run: |
-          # A workflow that does not parse is not a workflow that fails
-          # loudly: GitHub rejects it and the run comes back with no jobs
-          # at all.  actionlint says what is wrong instead.
-          curl -sfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-            | bash -s -- 1.7.7
-          ./actionlint .github/workflows/*.yml
+        uses: rhysd/actionlint@v1
+        with:
+          args: .github/workflows/*.yml
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
