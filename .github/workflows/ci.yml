@@ -31,6 +31,7 @@ env:
     libayatana-appindicator3-dev librsvg2-dev
     libpipewire-0.3-dev libdbus-1-dev
     libgbm-dev libegl1-mesa-dev
+    libclang-dev clang
 
 jobs:
   # The whole test suite has to pass on every platform.  The suite is

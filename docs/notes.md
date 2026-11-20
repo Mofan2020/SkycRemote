@@ -25,19 +25,33 @@ Windows 的测试时，测的是 macOS 的分支 —— Windows 的数字根本�
 时还要 Mesa 的 GBM。清单写在 `.github/workflows/ci.yml` 的 `LINUX_DEPS`
 里，两个 job 共用一份 —— 同一份清单写两遍，漏的总是没人看的那一份。
 
-这份清单是三轮试出来的，每一轮 GitHub 上只报一行：
+这份清单是四轮试出来的，每一轮 GitHub 上只报一行：
 
 | 缺的 | 报的错 |
 |---|---|
 | GTK / GLib | `Package glib-2.0 was not found` |
 | PipeWire | `Package libpipewire-0.3 was not found` |
 | GBM | `rust-lld: error: unable to find library -lgbm` |
+| libclang | `Unable to find libclang`（bindgen 生成 pipewire 绑定时） |
 
-前两轮是 pkg-config 找不到，最后一轮是链接器找不到 —— 前两个在编译
-早期就炸，最后一个要等到链接才炸，所以白等了两轮 CI。
+前两轮是 pkg-config 找不到，第三轮是链接器找不到，第四轮是 bindgen
+找不到 —— 一个比一个晚炸，所以一轮白等一次 CI。
 
-`docker run --rm -v "$PWD":/repo rust:1.90-bookworm` 能在本地把整个
-Linux 编译跑一遍，比在 CI 上试快。
+**验证的地方**：本机有 OrbStack 的 Linux 机器 `ServerForTest`
+（Ubuntu 26.04，arm64，192.168.139.149），`orb -m ServerForTest <命令>`
+就能进去跑。比在 CI 上试快得多，也不占 GitHub 的 runner。
+
+代码怎么进去：`orbctl push` 只认 `~/OrbStack/<机器名>/home/<用户>/`
+这个路径，而且 macOS 的扩展属性会挡住 `cp`，要加 `-X`：
+
+```
+tar czf /tmp/src.tar.gz --exclude=target --exclude=.git <要传的东西>
+cp -X /tmp/src.tar.gz ~/OrbStack/ServerForTest/home/skyc8266/
+orb -m ServerForTest tar xzf ~/src.tar.gz -C ~/项目目录
+```
+
+SSH 直连那台机器不通（`connect to host 192.168.139.149 port 22:
+Operation timed out`），走 `orb` 才进得去。
 
 ## workflow 自己也要被检查
 
