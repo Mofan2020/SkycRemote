@@ -497,11 +497,19 @@ fn emit_to(out: &ChannelSender<Out>, name: &str, payload: Value) {
 }
 
 /// Put one picture on the screen of the window.
+///
+/// The picture goes over as the H.264 that the encoder produced, not
+/// as pixels.  The browser has a decoder for that, and sending the
+/// compressed form is what keeps a full-screen picture inside a few
+/// hundred kilobytes a second instead of several megabytes.
+///
+/// The bytes are written as text, because that is all that can cross
+/// from here into the page.
 fn push_picture(out: &ChannelSender<Out>, picture: &skycremote_core::encode::EncodedFrame) {
-    // The picture is still in H.264 here.  Turning it into something
-    // the browser can show is the job of the decoder on the other side
-    // of the bridge; until that is in place the window is told what
-    // arrived, so the interface can show that something is moving.
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &picture.data,
+    );
     emit_to(
         out,
         "frame",
@@ -511,6 +519,8 @@ fn push_picture(out: &ChannelSender<Out>, picture: &skycremote_core::encode::Enc
             "keyframe": picture.keyframe,
             "bytes": picture.data.len(),
             "ptsNs": picture.pts.as_nanos() as u64,
+            "codec": "h264",
+            "data": encoded,
         }),
     );
 }

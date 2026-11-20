@@ -52,6 +52,10 @@
 
   var state = {
     view: 'connect',
+    // The decoder for the pictures.  It is made when the first
+    // picture arrives, because a browser that cannot decode H.264
+    // should say so once rather than on every picture.
+    decoder: null,
     themePref: 'system',
     resolvedTheme: 'light',
     settings: clone(DEFAULT_SETTINGS),
@@ -1620,8 +1624,23 @@
 
   function renderFrame(payload) {
     if (!payload) return;
-    // MOCK: the real backend sends decoded frames (or an encoded blob the
-    // webview can decode).  Until then the mock paints the canvas itself.
+
+    // The backend sends the picture as H.264.  The browser decodes it.
+    if (payload.codec === 'h264' && payload.data) {
+      var remote = $('#remote-canvas');
+      if (!remote) return;
+      if (!state.decoder) {
+        if (!NS.Decoder.supported()) {
+          if (window.console && console.warn) {
+            console.warn('[skycremote] this browser cannot decode H.264');
+          }
+          return;
+        }
+        state.decoder = new NS.Decoder(remote);
+      }
+      state.decoder.feed(payload.data, payload.ptsNs || 0);
+    }
+
     if (payload.imageData) {
       var canvas = $('#remote-canvas');
       if (!canvas) return;

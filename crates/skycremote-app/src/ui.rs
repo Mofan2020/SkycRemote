@@ -92,6 +92,7 @@ fn build_page() -> String {
     for script in [
         "i18n.js",
         "components/icons.js",
+        "components/decoder.js",
         "components/bridge.js",
         "app.js",
     ] {
