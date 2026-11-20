@@ -63,7 +63,7 @@ jobs:
   build:
     name: build
     needs: check-version
-    uses: Mofan2020/SkycRemote/.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml
     secrets: inherit
 
   publish:
