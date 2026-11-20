@@ -122,6 +122,20 @@ pub struct ScreenInfo {
 ///
 /// The kind is written into the object itself, so that the browser
 /// side can read it without knowing the order of the variants.
+///
+/// Two conventions travel with it:
+///
+///   - A key code is the DOM's `KeyboardEvent.keyCode`, so that every
+///     browser agrees on what number means what key.  The other end
+///     turns it into the key its own system knows.
+///   - A position is in the pixels of the picture that was sent, not in
+///     the pixels of the screen.  The end that injects it knows where
+///     that screen sits on the desktop and moves it there.
+///
+/// Characters that can be typed go as [`InputEvent::Text`] rather than
+/// as key codes: injecting a key means pressing a physical key, which
+/// the layout of the controlled machine would change.  Injecting the
+/// character itself does not care what keyboard is plugged in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum InputEvent {

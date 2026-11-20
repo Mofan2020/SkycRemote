@@ -30,6 +30,8 @@ pub fn make_screen(
     height: u32,
     scale_factor: f64,
     primary: bool,
+    origin_x: f64,
+    origin_y: f64,
 ) -> Screen {
     Screen {
         index,
@@ -38,6 +40,8 @@ pub fn make_screen(
         height,
         scale_factor,
         primary,
+        origin_x,
+        origin_y,
     }
 }
 
@@ -69,7 +73,7 @@ mod tests {
         // the image the GDI capture returns.  Multiplying by 2.0 here —
         // which is what the macOS and Linux paths must do — would claim a
         // 7680-pixel-wide screen that does not exist.
-        let screen = make_screen(0, "\\\\.\\DISPLAY1".into(), 3840, 2160, 2.0, true);
+        let screen = make_screen(0, "\\\\.\\DISPLAY1".into(), 3840, 2160, 2.0, true, 0.0, 0.0);
         assert_eq!(screen.width, 3840);
         assert_eq!(screen.height, 2160);
         assert_eq!(screen.scale_factor, 2.0);
@@ -77,7 +81,7 @@ mod tests {
 
     #[test]
     fn a_one_x_screen_passes_through() {
-        let screen = make_screen(1, "\\\\.\\DISPLAY2".into(), 1920, 1080, 1.0, false);
+        let screen = make_screen(1, "\\\\.\\DISPLAY2".into(), 1920, 1080, 1.0, false, 0.0, 0.0);
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
     }
@@ -99,7 +103,7 @@ mod tests {
 
     #[test]
     fn the_primary_flag_survives_the_conversion() {
-        let screen = make_screen(0, "primary".into(), 2560, 1440, 1.5, true);
+        let screen = make_screen(0, "primary".into(), 2560, 1440, 1.5, true, 0.0, 0.0);
         assert!(screen.primary);
         assert_eq!(screen.width, 2560);
     }

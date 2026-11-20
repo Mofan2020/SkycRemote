@@ -1014,15 +1014,21 @@
 
       var code = keyCodeFor(e);
       if (e.key.length === 1) {
+        // A character is sent as itself.  Sending it as a key as well
+        // would type it twice, and typing it by key would depend on
+        // the keyboard layout of the machine on the other end.
         sendInput({ type: 'Text', text: e.key });
+      } else {
+        sendInput({ type: 'KeyDown', key: code });
       }
-      sendInput({ type: 'KeyDown', key: code });
     });
 
     stage.addEventListener('keyup', function (e) {
       if (!state.connected) return;
       if (isTypingTarget(e.target)) return;
       e.preventDefault();
+      // Characters went out as characters, so there is no key to lift.
+      if (e.key.length === 1) return;
       sendInput({ type: 'KeyUp', key: keyCodeFor(e) });
     });
 

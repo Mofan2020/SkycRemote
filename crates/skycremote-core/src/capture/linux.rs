@@ -121,6 +121,8 @@ pub fn make_screen(
     height: u32,
     scale_factor: f64,
     primary: bool,
+    origin_x: f64,
+    origin_y: f64,
 ) -> Screen {
     let (pixel_width, pixel_height) = physical_size(width, height, scale_factor);
 
@@ -131,6 +133,8 @@ pub fn make_screen(
         height: pixel_height,
         scale_factor,
         primary,
+        origin_x,
+        origin_y,
     }
 }
 
@@ -188,14 +192,14 @@ mod tests {
     #[test]
     fn a_scaled_screen_reports_the_pixels_the_capture_will_have() {
         // A HiDPI X11 desktop at 2x: xcap answers 1280x800 logical.
-        let screen = make_screen(0, "eDP-1".into(), 1280, 800, 2.0, true);
+        let screen = make_screen(0, "eDP-1".into(), 1280, 800, 2.0, true, 0.0, 0.0);
         assert_eq!(screen.width, 2560);
         assert_eq!(screen.height, 1600);
     }
 
     #[test]
     fn an_unscaled_screen_is_left_alone() {
-        let screen = make_screen(0, "HDMI-1".into(), 1920, 1080, 1.0, false);
+        let screen = make_screen(0, "HDMI-1".into(), 1920, 1080, 1.0, false, 0.0, 0.0);
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
     }

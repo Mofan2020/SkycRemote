@@ -48,6 +48,14 @@ pub struct Screen {
     pub scale_factor: f64,
     /// Whether this screen holds the menu bar / taskbar / main desktop.
     pub primary: bool,
+    /// Where the top left corner of this screen sits on the desktop.
+    ///
+    /// In the units the platform's own input system uses: points on
+    /// macOS, pixels elsewhere.  A pointer position that comes from the
+    /// other end is in the pixels of the picture that was sent, so it
+    /// has to be moved into the desktop's frame before it can be used.
+    pub origin_x: f64,
+    pub origin_y: f64,
 }
 
 /// One captured picture of a screen.
@@ -354,6 +362,13 @@ fn screen_from_monitor(
         .is_primary()
         .unwrap_or_else(|_| info.is_some_and(|info| info.is_primary));
 
+    // The desktop's own idea of where this screen sits.  Without it a
+    // pointer would land at the top left of the desktop instead of on
+    // the screen that was being looked at.
+    let (origin_x, origin_y) = info
+        .map(|info| (f64::from(info.x), f64::from(info.y)))
+        .unwrap_or((0.0, 0.0));
+
     Ok(platform::make_screen(
         index,
         name,
@@ -361,6 +376,8 @@ fn screen_from_monitor(
         height,
         scale_factor,
         primary,
+        origin_x,
+        origin_y,
     ))
 }
 
