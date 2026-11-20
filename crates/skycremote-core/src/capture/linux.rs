@@ -91,6 +91,18 @@ pub fn detect_session_from_env() -> SessionKind {
     )
 }
 
+/// What to tell the user when there is no display server to talk to.
+///
+/// A headless machine — a server, a container, an SSH session — has no X11
+/// display and no Wayland compositor.  The backend says something about a
+/// closed connection or a display string it could not parse, and without
+/// this translation the user reads an internal message and has no idea
+/// what to do about it.
+pub const NO_DISPLAY_REASON: &str = "there is no display server to capture from. \
+    This machine has no X11 or Wayland session — it may be a server, a \
+    container, or a session reached over SSH. Screen capture needs a \
+    desktop session; log in on the machine's own display to use it";
+
 /// Recognises the portal failures inside a backend error message.
 ///
 /// The backend reports a D-Bus or portal error as an opaque string; the
@@ -107,13 +119,30 @@ pub fn explain_error(message: &str) -> Option<CaptureError> {
         || lowered.contains("pipewire");
 
     if looks_like_portal {
-        Some(CaptureError::Unsupported {
+        return Some(CaptureError::Unsupported {
             platform: "Wayland",
             reason: PORTAL_MISSING_REASON.to_string(),
-        })
-    } else {
-        None
+        });
     }
+
+    // The X11 client library reports a display it cannot reach in a
+    // handful of ways, and the wording depends on which one failed and
+    // on which feature was compiled in.  All of them mean the same thing
+    // to the user: there is nothing here to capture.
+    let looks_like_no_display = lowered.contains("parsing display string")
+        || lowered.contains("screen matching the display")
+        || lowered.contains("xopendisplay failed")
+        || lowered.contains("cannot open display")
+        || lowered.contains("connection error, possible i/o error");
+
+    if looks_like_no_display {
+        return Some(CaptureError::Unsupported {
+            platform: "X11",
+            reason: NO_DISPLAY_REASON.to_string(),
+        });
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -152,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn a_portal_failure_is_explained_and_other_errors_are_not() {
+    fn a_portal_failure_is_explained() {
         let described =
             explain_error("org.freedesktop.portal.ScreenCast was not provided by any .service")
                 .expect("a portal error must be recognised");
@@ -163,9 +192,43 @@ mod tests {
                 ..
             }
         ));
+    }
 
-        // A plain X11 failure must be passed through untouched.
-        assert!(explain_error("cannot open display :0").is_none());
+    #[test]
+    fn a_machine_without_a_display_server_is_explained() {
+        // A headless machine has no X11 display and no Wayland
+        // compositor.  The X11 client library says so in several ways,
+        // and every one of them has to reach the user as "there is
+        // nothing here to capture" rather than as an internal message
+        // about a closed connection.
+        for message in [
+            "Connection closed, error during parsing display string",
+            "Connection closed, the server does not have a screen matching the display",
+            "XOpenDisplay failed to open a display. Check the $DISPLAY env var",
+            "cannot open display :0",
+            "Connection error, possible I/O error",
+        ] {
+            let described = explain_error(message)
+                .unwrap_or_else(|| panic!("this failure must be recognised: {message}"));
+            assert!(
+                matches!(
+                    described,
+                    CaptureError::Unsupported {
+                        platform: "X11",
+                        ..
+                    }
+                ),
+                "wrong answer for {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrelated_failure_is_passed_through() {
+        // Something that is not about the display at all must not be
+        // dressed up as a missing display: the two need different fixes.
+        assert!(explain_error("the encoder ran out of memory").is_none());
+        assert!(explain_error("permission denied").is_none());
     }
 
     #[test]

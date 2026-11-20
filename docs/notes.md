@@ -53,6 +53,29 @@ orb -m ServerForTest tar xzf ~/src.tar.gz -C ~/项目目录
 SSH 直连那台机器不通（`connect to host 192.168.139.149 port 22:
 Operation timed out`），走 `orb` 才进得去。
 
+## 无显示器的 Linux 机器上，报错要说人话
+
+在一台没有 X11 也没有 Wayland 的机器上（服务器、容器、SSH 会话），
+`list_screens()` 会把 X11 客户端库的一句内部消息原样抛出来：
+
+```
+the capture backend failed: Connection closed, error during parsing display string
+```
+
+用户看到的是「连接关闭」，不知道该做什么 —— 重试多少次都没用，因为
+根本不是可重试的故障。
+
+`linux::explain_error` 现在认得这类错，返回 `Unsupported{platform: "X11"}`
+并说清楚「这台机器没有显示服务器可采集，需要登录到机器自己的桌面」。
+X11 客户端库有好几种说法（display string 解析失败、屏幕上没有匹配的
+screen、XOpenDisplay 失败、I/O 错误），全都认。
+
+原有的 `CaptureError::Backend` 注释写着「这个值得重试」，所以这个错误
+放进去本身就是错的 —— 它不是重试能解决的，是环境问题。
+
+这个 bug 是**在 Linux 虚拟机上跑测试才发现的**：macOS 和 Windows 上
+永远碰不到，所以 CI 里只有 Linux job 能抓到它。
+
 ## workflow 自己也要被检查
 
 一个解析不了的 workflow 不会大声失败：GitHub 直接拒绝那个文件，run
