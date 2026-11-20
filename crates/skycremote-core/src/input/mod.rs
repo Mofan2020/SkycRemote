@@ -189,6 +189,28 @@ pub fn global_position(screen: &Screen, x: u32, y: u32) -> (f64, f64) {
     )
 }
 
+/// 这个进程能不能往系统里注入输入。
+///
+/// macOS 上要往系统里塞键盘鼠标事件，得先拿到「辅助功能」权限。
+/// 没有的话事件会被安静地丢掉 —— 不报错，也不动。所以这个要在开始
+/// 之前问清楚，而不是等用户发现「点了没反应」。
+#[cfg(target_os = "macos")]
+pub fn can_inject() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// 这个进程能不能往系统里注入输入。
+///
+/// 除了 macOS 以外还没有能注入的平台，所以这里是说不行。
+#[cfg(not(target_os = "macos"))]
+pub fn can_inject() -> bool {
+    false
+}
+
 /// 造一个这台机器上的注入器。
 pub fn injector() -> Result<Box<dyn Injector>, InputError> {
     #[cfg(target_os = "macos")]

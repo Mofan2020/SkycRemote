@@ -38,6 +38,12 @@ enum Command {
         /// The port to listen on for the direct connection.
         #[arg(long, default_value_t = 21116)]
         port: u16,
+        /// How many pictures a second to send.
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
+        /// How many kilobits a second the pictures may use.
+        #[arg(long, default_value_t = 2000)]
+        bitrate: u32,
     },
     /// Run the end that does the controlling.
     Control {
@@ -90,8 +96,31 @@ fn main() -> anyhow::Result<()> {
                     Command::Tracker { port } => {
                         skycremote_tracker::serve(port).await?;
                     }
-                    Command::Host { id, name, tracker, port } => {
-                        eprintln!("host {id} on {port}, tracker {tracker}");
+                    Command::Host {
+                        id,
+                        name,
+                        tracker,
+                        port,
+                        fps,
+                        bitrate,
+                    } => {
+                        let display_name = if name.is_empty() {
+                            id.clone()
+                        } else {
+                            name.clone()
+                        };
+                        eprintln!(
+                            "skycremote: sharing {id} as {display_name} on port {port}"
+                        );
+                        skycremote_core::host::run(skycremote_core::host::HostOptions {
+                            tracker,
+                            device_id: id,
+                            device_name: display_name,
+                            port,
+                            fps,
+                            bitrate_bps: bitrate * 1000,
+                        })
+                        .await?;
                     }
                     Command::Control { id, tracker } => {
                         eprintln!("control {id}, tracker {tracker}");

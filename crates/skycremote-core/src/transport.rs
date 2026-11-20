@@ -63,9 +63,15 @@ pub struct Receiver {
 ///
 /// The two ends each have one stream for reading and one for writing,
 /// so both can talk at the same time without waiting for the other.
+///
+/// It can be copied.  The stream underneath cannot be, so it sits
+/// behind a lock and the copies take turns writing.  That matters
+/// because the two halves of a session write at the same time: one
+/// sends the pictures, the other answers the other end.
+#[derive(Clone)]
 pub struct Sender {
     /// The reliable stream the control messages go out.
-    control: SendStream,
+    control: Arc<tokio::sync::Mutex<SendStream>>,
     /// The connection, kept so the caller can ask about it.
     connection: Connection,
 }
@@ -123,16 +129,17 @@ impl Sender {
     /// Send a control message.  It arrives, or it does not.
     ///
     /// The stream sends the data on its own; there is nothing to flush.
-    pub async fn send_control(&mut self, data: Bytes) -> Result<()> {
+    pub async fn send_control(&self, data: Bytes) -> Result<()> {
         // Every message is sent with its length in front of it, because
         // a stream does not keep the borders between two messages: read
         // too much and two messages arrive as one.
         let length = (data.len() as u32).to_be_bytes();
-        self.control
+        let mut control = self.control.lock().await;
+        control
             .write_all(&length)
             .await
             .context("the control stream failed")?;
-        self.control
+        control
             .write_all(&data)
             .await
             .context("the control stream failed")?;
@@ -571,7 +578,7 @@ pub async fn open(
     });
 
     let sender = Sender {
-        control: control_send,
+        control: Arc::new(tokio::sync::Mutex::new(control_send)),
         connection: connection.clone(),
     };
     let receiver = Receiver {

@@ -457,10 +457,10 @@ impl Backend {
     // MARK: - Small helpers
 
     /// The way out to the other end, if there is one.
-    fn sender_mut(&mut self) -> Result<&mut transport::Sender> {
+    fn sender(&self) -> Result<&transport::Sender> {
         self.session
-            .as_mut()
-            .map(|session| &mut session.sender)
+            .as_ref()
+            .map(|session| &session.sender)
             .ok_or_else(|| anyhow!("there is no session"))
     }
 
@@ -469,9 +469,9 @@ impl Backend {
     /// The sender is borrowed, not copied: the stream underneath does
     /// not allow two owners, so the session keeps the only one and
     /// lends it for the length of the message.
-    async fn send(&mut self, message: &Message) -> Result<()> {
+    async fn send(&self, message: &Message) -> Result<()> {
         let text = serde_json::to_string(message).context("the message could not be written")?;
-        self.sender_mut()?
+        self.sender()?
             .send_control(bytes::Bytes::from(text))
             .await
             .context("the message could not be sent")
