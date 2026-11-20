@@ -1,0 +1,99 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The tag has to name the version the code carries.  A tag that says
+  # v0.2.0 while the crates still say 0.1.0 ships a binary that reports
+  # the wrong version, and nobody notices until somebody reports it.
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Read the version the tag asks for
+        id: read
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Every crate has to carry that version
+        run: |
+          WANT="${{ steps.read.outputs.version }}"
+          if [ -z "$WANT" ] || [ "$WANT" = "refs/tags/v" ]; then
+            echo "the tag does not carry a version" >&2
+            exit 1
+          fi
+          for crate in crates/*/Cargo.toml; do
+            GOT=$(sed -n 's/^version = "\(.*\)"/\1/p' "$crate" | head -1)
+            if [ "$GOT" != "$WANT" ]; then
+              echo "版本不一致：tag=$WANT $crate=$GOT" >&2
+              exit 1
+            fi
+          done
+          echo "all crates carry $WANT"
+
+  # The binaries come from the same workflow that tests them.  The
+  # dependency list for Linux lives in one place for the same reason:
+  # a list written twice goes out of date in one copy only, and the
+  # failing copy is always the one nobody reads.  The tests run first,
+  # so a release can never ship a build that does not pass them.
+  #
+  # The matrix lives in the called workflow: a reusable workflow cannot
+  # be given one here.
+  build:
+    name: build
+    needs: check-version
+    uses: Mofan2020/SkycRemote/.github/workflows/ci.yml
+    secrets: inherit
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Download every archive
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect the archives
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name 'skycremote-*.tar.gz' -o -name 'skycremote-*.zip' \) \
+            -exec cp {} release-assets/ \;
+          ls -la release-assets
+          test -n "$(ls -A release-assets)" || { echo "no archives collected"; exit 1; }
+
+      - name: Publish the pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          prerelease: true
+          draft: false
+          fail_on_unmatched_files: true
+          files: release-assets/*
+          body_path: release-notes.md

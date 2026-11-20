@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  # The release workflow calls this one to get the binaries, so that the
+  # dependency list and the build steps live in a single place — and so
+  # that the tests are the gate in front of a release.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,8 +26,10 @@ env:
     libxcb-xfixes0-dev libxcb-composite0-dev
     libxkbcommon-dev libxkbcommon-x11-dev
     libwayland-dev libx11-dev
+    libxrandr-dev libxcomposite-dev libxfixes-dev
     libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev
     libayatana-appindicator3-dev librsvg2-dev
+    libpipewire-0.3-dev libdbus-1-dev
 
 jobs:
   # The whole test suite has to pass on every platform.  The suite is
