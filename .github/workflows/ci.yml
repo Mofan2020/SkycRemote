@@ -62,9 +62,19 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check the workflow files
-        uses: rhysd/actionlint@v1
-        with:
-          args: .github/workflows/*.yml
+        if: runner.os == 'Linux'
+        run: |
+          # A workflow that does not parse is not a workflow that fails
+          # loudly: GitHub rejects it and the run comes back with no jobs
+          # at all.  actionlint says what is wrong instead.
+          #
+          # The check runs on Linux only.  The download script is bash,
+          # and the Windows runner's bash is not the same bash — piping a
+          # downloaded script into it failed there.
+          curl -sfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            -o /tmp/download-actionlint.bash
+          bash /tmp/download-actionlint.bash 1.7.7
+          ./actionlint .github/workflows/*.yml
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
