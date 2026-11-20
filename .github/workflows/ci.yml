@@ -11,6 +11,19 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # The Linux runners need the webview stack to compile the desktop shell:
+  # tao and wry reach into GTK, GLib and WebKitGTK.  The same list has to
+  # be installed in both jobs, and a list written twice goes out of date
+  # in one place only — so it is written once here.
+  LINUX_DEPS: >-
+    sudo apt-get update && sudo apt-get install -y --no-install-recommends
+    pkg-config libssl-dev
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev
+    libxcb-xfixes0-dev libxcb-composite0-dev
+    libxkbcommon-dev libxkbcommon-x11-dev
+    libwayland-dev libx11-dev
+    libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+    libayatana-appindicator3-dev librsvg2-dev
 
 jobs:
   # The whole test suite has to pass on every platform.  The suite is
@@ -30,19 +43,11 @@ jobs:
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libssl-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libxcb-xfixes0-dev libxcb-composite0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libx11-dev
+        run: ${{ env.LINUX_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-test
@@ -76,16 +81,7 @@ jobs:
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libssl-dev \
-            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev \
-            libxcb-xfixes0-dev libxcb-composite0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libx11-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+        run: ${{ env.LINUX_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
 
