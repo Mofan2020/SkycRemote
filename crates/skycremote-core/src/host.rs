@@ -92,6 +92,40 @@ impl Default for HostOptions {
     }
 }
 
+/// What the picture task is told to do.
+enum SourceCommand {
+    /// Share another screen.
+    Switch(u32),
+    /// Make the pictures differently from now on.
+    Update {
+        /// How many pictures a second.
+        fps: u32,
+        /// How many bits a second they may use.
+        bitrate_bps: u32,
+    },
+}
+
+/// A handle for changing the settings of a share that is running.
+///
+/// The share is a task of its own, so the one who started it keeps
+/// only this handle and sends the new settings through it.
+#[derive(Clone)]
+pub struct HostUpdates {
+    /// Where the new settings go.
+    sender: tokio::sync::mpsc::UnboundedSender<HostOptions>,
+}
+
+impl HostUpdates {
+    /// Change the settings of the running share.
+    ///
+    /// It says whether the share was still there to be told.  The
+    /// pictures are made again with the new numbers, which costs one
+    /// frame.
+    pub fn send(&self, options: HostOptions) -> bool {
+        self.sender.send(options).is_ok()
+    }
+}
+
 /// A share that is under the control of whoever started it.
 ///
 /// The service is the one that holds the cancellation: whoever started
@@ -102,14 +136,28 @@ pub struct HostService {
     options: HostOptions,
     /// The signal that says "stop".
     cancel: CancellationToken,
+    /// Where the new settings go.
+    updates: tokio::sync::mpsc::UnboundedSender<HostOptions>,
+    /// The new settings that come in.
+    incoming: tokio::sync::mpsc::UnboundedReceiver<HostOptions>,
 }
 
 impl HostService {
     /// Make a share that is not running yet.
     pub fn new(options: HostOptions) -> Self {
+        let (updates, incoming) = tokio::sync::mpsc::unbounded_channel();
         Self {
             options,
             cancel: CancellationToken::new(),
+            updates,
+            incoming,
+        }
+    }
+
+    /// A handle for changing the settings while the share is on.
+    pub fn update_handle(&self) -> HostUpdates {
+        HostUpdates {
+            sender: self.updates.clone(),
         }
     }
 
@@ -131,7 +179,7 @@ impl HostService {
     /// This does not return while the share is on: it keeps listening
     /// so that the other end can come and go.  It returns when the
     /// share is cancelled.
-    pub async fn run(self, events: UnboundedSender<HostEvent>) -> Result<()> {
+    pub async fn run(mut self, events: UnboundedSender<HostEvent>) -> Result<()> {
         if self.options.device_id.trim().is_empty() {
             return Err(anyhow!("this device needs an id"));
         }
@@ -177,7 +225,7 @@ impl HostService {
     }
 
     /// One session: wait for the other end, then serve it until it leaves.
-    async fn serve_once(&self, events: &UnboundedSender<HostEvent>) -> Result<()> {
+    async fn serve_once(&mut self, events: &UnboundedSender<HostEvent>) -> Result<()> {
         let screens = capture::list_screens().context("the screens could not be listed")?;
         if screens.is_empty() {
             return Err(anyhow!("there are no screens to share"));
@@ -186,13 +234,22 @@ impl HostService {
 
         let _ = events.send(HostEvent::Waiting);
 
+        // The things that do not change while the share is on are
+        // taken out of `self`, so that the only thing borrowed from
+        // it further down is the channel of new settings.
+        let tracker = self.options.tracker.clone();
+        let device_id = self.options.device_id.clone();
+        let device_name = self.options.device_name.clone();
+        let port = self.options.port;
+        let cancel = self.cancel.clone();
+
         let (sender, mut receiver) = transport::listen_direct_cancellable(
-            &self.options.tracker,
-            &self.options.device_id,
-            &self.options.device_name,
-            self.options.port,
+            &tracker,
+            &device_id,
+            &device_name,
+            port,
             WAIT_FOR_THE_OTHER_END,
-            &self.cancel,
+            &cancel,
         )
         .await
         .context("the other end did not arrive")?;
@@ -205,13 +262,14 @@ impl HostService {
         // The pictures go out on their own task, because they are made at
         // the frame rate and the input has to be answered the moment it
         // arrives.
-        let (switch_sender, mut switch_receiver) = tokio::sync::mpsc::unbounded_channel::<u32>();
+        let (command_sender, mut command_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<SourceCommand>();
         let picture_sender = sender.clone();
         let picture_screens = screens.clone();
         let picture_start = shared.clone();
-        let fps = self.options.fps;
-        let bitrate = self.options.bitrate_bps;
-        let picture_cancel = self.cancel.clone();
+        let mut fps = self.options.fps;
+        let mut bitrate = self.options.bitrate_bps;
+        let picture_cancel = cancel.clone();
         tokio::spawn(async move {
             let mut current = picture_start;
             let mut source = match start_source(&current, bitrate, fps) {
@@ -230,21 +288,40 @@ impl HostService {
                         pipeline::send_picture(&picture_sender, &picture, frame_id);
                         frame_id = frame_id.wrapping_add(1);
                     }
-                    index = switch_receiver.recv() => {
-                        let Some(index) = index else { break };
-                        let Some(next) = picture_screens.get(index as usize) else {
-                            continue;
-                        };
-                        source.stop();
-                        current = next.clone();
-                        source = match start_source(&current, bitrate, fps) {
-                            Ok(source) => source,
-                            Err(error) => {
-                                eprintln!("skycremote: that screen could not be captured: {error}");
-                                return;
+                    command = command_receiver.recv() => {
+                        let Some(command) = command else { break };
+                        match command {
+                            SourceCommand::Switch(index) => {
+                                let Some(next) = picture_screens.get(index as usize) else {
+                                    continue;
+                                };
+                                source.stop();
+                                current = next.clone();
+                                source = match start_source(&current, bitrate, fps) {
+                                    Ok(source) => source,
+                                    Err(error) => {
+                                        eprintln!("skycremote: that screen could not be captured: {error}");
+                                        return;
+                                    }
+                                };
+                                eprintln!("skycremote: now sharing {}", current.name);
                             }
-                        };
-                        eprintln!("skycremote: now sharing {}", current.name);
+                            SourceCommand::Update { fps: new_fps, bitrate_bps: new_bitrate } => {
+                                // The pictures are made again with the
+                                // new numbers.  One frame is lost while
+                                // the capture is set up again.
+                                fps = new_fps;
+                                bitrate = new_bitrate;
+                                source.stop();
+                                source = match start_source(&current, bitrate, fps) {
+                                    Ok(source) => source,
+                                    Err(error) => {
+                                        eprintln!("skycremote: the capture could not be set up again: {error}");
+                                        return;
+                                    }
+                                };
+                            }
+                        }
                     }
                 }
             }
@@ -256,7 +333,22 @@ impl HostService {
         loop {
             let incoming = tokio::select! {
                 biased;
-                _ = self.cancel.cancelled() => break,
+                _ = cancel.cancelled() => break,
+                // The settings can be changed while the share is on.
+                // The new numbers are handed to the picture task, and
+                // the loop goes on waiting for the input.
+                change = self.incoming.recv() => {
+                    match change {
+                        Some(options) => {
+                            let _ = command_sender.send(SourceCommand::Update {
+                                fps: options.fps,
+                                bitrate_bps: options.bitrate_bps,
+                            });
+                        }
+                        None => break,
+                    }
+                    continue;
+                }
                 incoming = receiver.recv() => incoming,
             };
             match incoming {
@@ -288,7 +380,7 @@ impl HostService {
                             let _ = send(&sender, &Message::Screens { screens: list }).await;
                         }
                         Message::SwitchScreen { index } => {
-                            let _ = switch_sender.send(index);
+                            let _ = command_sender.send(SourceCommand::Switch(index));
                         }
                         _ => {}
                     }

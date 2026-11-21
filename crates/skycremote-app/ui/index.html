@@ -63,6 +63,12 @@
           </div>
         </div>
 
+        <!-- log -->
+        <button id="toolbar-logs" class="icon-btn" type="button"
+                data-i18n-title="topbar.logs" title="Log">
+          <span class="icon" data-icon="list"></span>
+        </button>
+
         <!-- settings -->
         <button id="toolbar-settings" class="icon-btn" type="button"
                 data-i18n-title="topbar.settings" title="Settings">
@@ -144,17 +150,17 @@
 
         <form id="share-form" class="share-form" autocomplete="off">
           <div class="share-field">
-            <label for="share-id-input" data-i18n="share.id">设备 ID</label>
-            <input id="share-id-input" type="text" spellcheck="false" autocapitalize="off"
-                   autocorrect="off" placeholder="my-mac" data-i18n-placeholder="share.idPlaceholder">
+            <span class="share-label" data-i18n="share.id">设备 ID</span>
+            <span class="share-static" id="share-id-value">—</span>
           </div>
           <div class="share-field">
-            <label for="share-name-input" data-i18n="share.name">显示名称</label>
-            <input id="share-name-input" type="text" placeholder="我的 Mac" data-i18n-placeholder="share.namePlaceholder">
+            <span class="share-label" data-i18n="share.name">显示名称</span>
+            <span class="share-static" id="share-name-value">—</span>
           </div>
           <div class="share-field">
-            <label for="share-tracker-input" data-i18n="share.tracker">Tracker 地址</label>
-            <input id="share-tracker-input" type="text" spellcheck="false" placeholder="http://127.0.0.1:21115">
+            <span class="share-label" data-i18n="share.tracker">Tracker 地址</span>
+            <span class="share-static" id="share-tracker-value">—</span>
+            <p class="share-hint" data-i18n="share.tracker.hint">在「设置」里改，两边用的是同一个地址</p>
           </div>
           <button id="share-btn" class="btn btn-primary btn-lg" type="submit">
             <span class="icon" data-icon="play"></span>
@@ -460,6 +466,30 @@
     <div class="settings-scroll" id="settings-scroll">
 
       <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.connection">连接</h3>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-tracker" data-i18n="settings.group.tracker">Tracker 地址</label>
+          <input id="settings-tracker" class="input" type="text" spellcheck="false" placeholder="http://127.0.0.1:21115">
+          <p class="set-hint" data-i18n="settings.group.tracker.hint">控制和共享都用这一个地址，两台电脑要连到同一个 Tracker</p>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-device-id" data-i18n="share.id">设备 ID</label>
+          <input id="settings-device-id" class="input" type="text" spellcheck="false" autocapitalize="off"
+                 autocorrect="off" placeholder="my-mac">
+          <p class="set-hint" data-i18n="settings.group.deviceId.hint">这台电脑的编号，对面连你的时候要用它</p>
+        </div>
+
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-device-name" data-i18n="share.name">显示名称</label>
+          <input id="settings-device-name" class="input" type="text" placeholder="我的 Mac">
+        </div>
+
+        <p class="set-hint" data-i18n="settings.group.apply.hint">码率和帧率在共享的时候改了立刻生效；Tracker 和设备 ID 要下次开始共享时才算数。</p>
+      </section>
+
+      <section class="set-group">
         <h3 class="set-group-title" data-i18n="settings.group.display">Display &amp; quality</h3>
 
         <div class="set-row set-row-stack">
@@ -471,23 +501,24 @@
             <option value="1080p60" data-i18n="settings.quality.1080p60">1080p60</option>
             <option value="1080p" data-i18n="settings.quality.1080p">1080p</option>
           </select>
+          <p class="set-hint" data-i18n="settings.group.quality.hint">画质预设就是帧率和码率，选了会一起改</p>
         </div>
 
         <div class="set-row set-row-stack">
           <div class="set-label-row">
             <label class="set-label" for="bitrate-slider" data-i18n="settings.group.bitrate">Bitrate</label>
-            <output id="bitrate-value" class="set-value">50 Mbps</output>
+            <output id="bitrate-value" class="set-value">8 Mbps</output>
           </div>
-          <input id="bitrate-slider" class="slider" type="range" min="2" max="500" step="1" value="50">
+          <input id="bitrate-slider" class="slider" type="range" min="2" max="500" step="1" value="8">
           <p class="set-hint" data-i18n="settings.group.bitrate.hint">Range 2 - 500 Mbps</p>
         </div>
 
         <div class="set-row set-row-stack">
           <div class="set-label-row">
             <label class="set-label" for="framerate-slider" data-i18n="settings.group.framerate">Frame rate</label>
-            <output id="framerate-value" class="set-value">60 FPS</output>
+            <output id="framerate-value" class="set-value">30 FPS</output>
           </div>
-          <input id="framerate-slider" class="slider" type="range" min="15" max="240" step="1" value="60">
+          <input id="framerate-slider" class="slider" type="range" min="15" max="240" step="1" value="30">
           <p class="set-hint" data-i18n="settings.group.framerate.hint">Frames sent per second</p>
         </div>
 
@@ -645,6 +676,25 @@
       </button>
       <button id="settings-save-btn" class="btn btn-primary" type="button">
         <span class="icon" data-icon="check"></span><span data-i18n="common.save">Save</span>
+      </button>
+    </footer>
+  </aside>
+
+  <!-- ======================= LOG ======================= -->
+  <aside id="log-panel" class="drawer drawer-right" aria-label="Log" hidden>
+    <header class="drawer-head">
+      <h2 class="drawer-title"><span class="icon" data-icon="list"></span><span data-i18n="log.title">日志</span></h2>
+      <button id="log-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close" title="Close">
+        <span class="icon" data-icon="x"></span>
+      </button>
+    </header>
+
+    <div class="log-scroll" id="log-list"></div>
+
+    <footer class="drawer-foot">
+      <span class="log-count" id="log-count"></span>
+      <button id="log-clear" class="btn btn-ghost" type="button">
+        <span class="icon" data-icon="trash"></span><span data-i18n="log.clear">清除</span>
       </button>
     </footer>
   </aside>

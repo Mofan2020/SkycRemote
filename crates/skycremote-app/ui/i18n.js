@@ -64,6 +64,7 @@
       'topbar.theme.light': '浅色',
       'topbar.theme.dark': '深色',
       'topbar.settings': '设置',
+      'topbar.logs': '日志',
 
       /* ---------- 连接页 ---------- */
       'connect.title': '连接到远程设备',
@@ -107,6 +108,8 @@
       'share.name': '显示名称',
       'share.namePlaceholder': '我的 Mac',
       'share.tracker': 'Tracker 地址',
+      'share.tracker.hint': '在「设置」里改，两边用的是同一个地址',
+      'share.error.noId': '先在「设置」里给这台电脑起一个设备 ID',
       'share.start': '开始共享',
       'share.starting': '正在开始…',
       'share.stop': '停止共享',
@@ -248,8 +251,18 @@
 
       /* ---------- 设置 ---------- */
       'settings.title': '设置',
+      'settings.group.connection': '连接',
+      'settings.group.tracker': 'Tracker 地址',
+      'settings.group.tracker.hint': '控制和共享都用这一个地址，两台电脑要连到同一个 Tracker',
+      'settings.group.deviceId.hint': '这台电脑的编号，对面连你的时候要用它',
+      'settings.group.apply.hint': '码率和帧率在共享的时候改了立刻生效；Tracker 和设备 ID 要下次开始共享时才算数。',
+      'log.title': '日志',
+      'log.clear': '清除',
+      'log.empty': '还没有日志。',
+      'log.count': '{count} 行',
       'settings.group.display': '显示与画质',
       'settings.group.quality': '画质预设',
+      'settings.group.quality.hint': '画质预设就是帧率和码率，选了会一起改',
       'settings.group.bitrate': '码率',
       'settings.group.bitrate.hint': '范围 2 – 500 Mbps，数值越高画面越清晰，占用带宽也越大',
       'settings.group.framerate': '帧率',
@@ -417,6 +430,7 @@
       'topbar.theme.light': 'Light',
       'topbar.theme.dark': 'Dark',
       'topbar.settings': 'Settings',
+      'topbar.logs': 'Log',
 
       /* ---------- Connect screen ---------- */
       'connect.title': 'Connect to a remote device',
@@ -460,6 +474,8 @@
       'share.name': 'Display name',
       'share.namePlaceholder': 'My Mac',
       'share.tracker': 'Tracker address',
+      'share.tracker.hint': 'Change it in Settings: both ends use the same one',
+      'share.error.noId': 'Give this computer a device id in Settings first',
       'share.start': 'Start sharing',
       'share.starting': 'Starting…',
       'share.stop': 'Stop sharing',
@@ -601,8 +617,18 @@
 
       /* ---------- Settings ---------- */
       'settings.title': 'Settings',
+      'settings.group.connection': 'Connection',
+      'settings.group.tracker': 'Tracker address',
+      'settings.group.tracker.hint': 'Both the control end and the sharing end use this one; the two computers need the same tracker',
+      'settings.group.deviceId.hint': 'The id of this computer; the other side needs it to connect',
+      'settings.group.apply.hint': 'Bitrate and frame rate take effect right away while the share is on. The tracker and the device id count from the next share.',
+      'log.title': 'Log',
+      'log.clear': 'Clear',
+      'log.empty': 'Nothing in the log yet.',
+      'log.count': '{count} lines',
       'settings.group.display': 'Display & quality',
       'settings.group.quality': 'Quality preset',
+      'settings.group.quality.hint': 'A preset is a frame rate and a bitrate: picking one changes both',
       'settings.group.bitrate': 'Bitrate',
       'settings.group.bitrate.hint': 'Range 2 – 500 Mbps. Higher means a sharper picture and more bandwidth.',
       'settings.group.framerate': 'Frame rate',

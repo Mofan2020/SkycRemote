@@ -28,10 +28,20 @@
    * State
    * ================================================================== */
 
+  // The presets are the numbers that are really used: the picture
+  // quality is a frame rate and a bitrate, nothing else.
+  var QUALITY_PRESETS = {
+    auto: { fps: 30, bitrate: 8 },
+    '4k': { fps: 60, bitrate: 200 },
+    fps144: { fps: 144, bitrate: 120 },
+    '1080p60': { fps: 60, bitrate: 20 },
+    '1080p': { fps: 30, bitrate: 12 }
+  };
+
   var DEFAULT_SETTINGS = {
     quality: 'auto',
-    bitrate: 50,
-    framerate: 60,
+    bitrate: 8,
+    framerate: 30,
     encoder: 'auto',
     audioEnabled: true,
     audioQuality: 'high',
@@ -47,7 +57,12 @@
     terminalShell: 'default',
     portMappings: [],
     language: 'zh',
-    theme: 'system'
+    theme: 'system',
+    // Where the tracker is.  It is one thing in one place: the
+    // control end and the sharing end both use this one.
+    tracker: 'http://127.0.0.1:21115',
+    deviceId: '',
+    deviceName: ''
   };
 
   var state = {
@@ -372,17 +387,30 @@
   }
 
   function persistSettings() {
+    // The file on disk belongs to the backend: the browser's own
+    // storage is only a copy for the case where the page is opened
+    // without the program behind it.
     try {
       global.localStorage.setItem('skycremote.settings', JSON.stringify(state.settings));
     } catch (e) { /* ignore */ }
+    if (bridge.isNative()) {
+      bridge.call('saveSettings', state.settings).then(function (result) {
+        // What became of the settings: the numbers of the pictures
+        // can be changed while the share is on, the rest waits.
+        if (result && result.applied && result.applied.length) {
+          result.applied.forEach(function (line) { toast(line, 'info'); });
+        }
+        if (state.mode === 'share') fillShareForm();
+      }).catch(function () {});
+    }
   }
 
   /** Read every control in the settings panel into `state.settings`. */
   function readSettingsForm() {
     var s = state.settings;
     s.quality = $('#quality-select').value;
-    s.bitrate = parseInt($('#bitrate-slider').value, 10) || 50;
-    s.framerate = parseInt($('#framerate-slider').value, 10) || 60;
+    s.bitrate = parseInt($('#bitrate-slider').value, 10) || 8;
+    s.framerate = parseInt($('#framerate-slider').value, 10) || 30;
     s.encoder = $('#encoder-select').value;
     s.audioEnabled = $('#audio-enabled').checked;
     s.audioQuality = $('#audio-quality').value;
@@ -397,6 +425,12 @@
     s.terminalShell = $('#terminal-shell').value;
     s.language = $('#settings-language').value;
     s.theme = $('#settings-theme').value;
+    var tracker = $('#settings-tracker');
+    if (tracker) s.tracker = (tracker.value || '').trim();
+    var deviceId = $('#settings-device-id');
+    if (deviceId) s.deviceId = (deviceId.value || '').trim();
+    var deviceName = $('#settings-device-name');
+    if (deviceName) s.deviceName = deviceName.value || '';
   }
 
   /** Push `state.settings` back into the settings form. */
@@ -421,6 +455,12 @@
     $('#terminal-shell').value = s.terminalShell;
     $('#settings-language').value = s.language;
     $('#settings-theme').value = s.theme;
+    var tracker = $('#settings-tracker');
+    if (tracker) tracker.value = s.tracker || '';
+    var deviceId = $('#settings-device-id');
+    if (deviceId) deviceId.value = s.deviceId || '';
+    var deviceName = $('#settings-device-name');
+    if (deviceName) deviceName.value = s.deviceName || '';
     renderPorts();
   }
 
@@ -446,6 +486,8 @@
     applyI18n();
     refreshQualityDisplay();
     syncToolbarDensity();
+    fillShareForm();
+    writeLog('info', '设置已保存');
     toast(t('toast.settingsSaved'), 'success');
   }
 
@@ -1720,7 +1762,7 @@
       if (sel) sel.value = id;
       refreshQualityDisplay();
       persistSettings();
-      return bridge.call('setQuality', { id: id });
+      return bridge.call('setQuality', { quality: id });
     },
 
     /** Set the target bitrate in Mbps. */
@@ -1732,7 +1774,7 @@
       var out = $('#bitrate-value');
       if (out) out.textContent = value + ' Mbps';
       persistSettings();
-      return bridge.call('setBitrate', { mbps: value });
+      return bridge.call('setBitrate', { bitrate: value });
     },
 
     /** Set the target frame rate. */
@@ -1744,7 +1786,7 @@
       var out = $('#framerate-value');
       if (out) out.textContent = value + ' FPS';
       persistSettings();
-      return bridge.call('setFramerate', { fps: value });
+      return bridge.call('setFramerate', { framerate: value });
     },
 
     /** List the screens the peer reports. */
@@ -2216,6 +2258,16 @@
     if (quality) quality.addEventListener('change', function () {
       state.settings.quality = quality.value;
       refreshQualityDisplay();
+      // A preset is nothing but a frame rate and a bitrate: the
+      // numbers it stands for are put into the two sliders, so that
+      // what it does is visible.
+      var preset = QUALITY_PRESETS[quality.value];
+      if (preset) {
+        state.settings.bitrate = preset.bitrate;
+        state.settings.framerate = preset.fps;
+        writeSettingsForm();
+        persistSettings();
+      }
       toast(t('toast.qualityChanged', { value: t('status.quality.' + quality.value) }), 'info');
     });
 
@@ -2479,24 +2531,22 @@
   }
 
   function fillShareForm() {
-    var id = $('#share-id-input');
-    var name = $('#share-name-input');
-    var tracker = $('#share-tracker-input');
-    var settings = state.backendSettings || {};
-    if (id && !id.value) id.value = settings.device_id || '';
-    if (name && !name.value) name.value = settings.device_name || '';
-    if (tracker && !tracker.value) tracker.value = settings.tracker || '';
-  }
-
-  function shareValue(id) {
-    var node = $(id);
-    return node ? (node.value || '').trim() : '';
+    // The device id, the name and the tracker are one thing in one
+    // place: the settings.  Here they are only shown.
+    var settings = state.settings || {};
+    var id = $('#share-id-value');
+    var name = $('#share-name-value');
+    var tracker = $('#share-tracker-value');
+    if (id) id.textContent = settings.deviceId || '—';
+    if (name) name.textContent = settings.deviceName || '—';
+    if (tracker) tracker.textContent = settings.tracker || '—';
   }
 
   function startSharing() {
-    var id = shareValue('#share-id-input');
+    var settings = state.settings || {};
+    var id = (settings.deviceId || '').trim();
     if (!id) {
-      toast(t('share.error.empty'), 'warning');
+      toast(t('share.error.noId'), 'warning');
       return;
     }
     if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) {
@@ -2511,15 +2561,21 @@
     }
     setShareButtonLabel(t('share.starting'));
 
+    writeLog('info', '开始共享：' + id);
     bridge.call('startHost', {
       deviceId: id,
-      deviceName: shareValue('#share-name-input'),
-      tracker: shareValue('#share-tracker-input')
+      deviceName: (settings.deviceName || '').trim()
     }).then(function () {
       state.sharing = true;
       showShareCard(id);
       setShareButtonStop();
       setShareStatus('waiting');
+      // The button was greyed out while the share was starting.  It
+      // has to be usable again: it is the one that stops the share.
+      if (button) {
+        button.classList.remove('is-busy');
+        button.disabled = false;
+      }
     }).catch(function (error) {
       if (button) {
         button.classList.remove('is-busy');
@@ -2538,6 +2594,7 @@
     }
     setShareButtonLabel(t('share.stopping'));
 
+    writeLog('info', '停止共享');
     bridge.call('stopHost').then(function () {
       state.sharing = false;
       if (button) {
@@ -2609,9 +2666,14 @@
     if (!payload) return;
     var kind = payload.state;
     if (kind === 'sharing') {
+      state.sharing = true;
       setShareStatus('sharing', t('share.state.sharingDetail', { screen: payload.screen || '' }));
     } else if (kind === 'warning') {
+      state.sharing = true;
       setShareStatus('warning', payload.message || t('share.state.warning'));
+    } else if (kind === 'waiting') {
+      state.sharing = true;
+      setShareStatus('waiting');
     } else if (kind === 'stopped') {
       state.sharing = false;
       setShareStatus('stopped');
@@ -2664,6 +2726,91 @@
   }
 
   /* ==================================================================
+   * The log
+   *
+   * The lines are kept by the program, not by the page: the window
+   * can be closed and the lines are still there when it opens again.
+   * ================================================================== */
+
+  var logEntries = [];
+
+  /** The time of the day a line was written. */
+  function logTime(entry) {
+    try {
+      return new Date(entry.time || Date.now()).toLocaleTimeString();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function renderLogs() {
+    var list = $('#log-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!logEntries.length) {
+      list.appendChild(el('p', 'log-empty', t('log.empty')));
+    } else {
+      logEntries.forEach(function (entry) {
+        var row = el('div', 'log-row log-' + (entry.level || 'info'));
+        row.appendChild(el('span', 'log-time', logTime(entry)));
+        row.appendChild(el('span', 'log-message', entry.message || ''));
+        list.appendChild(row);
+      });
+    }
+    var count = $('#log-count');
+    if (count) count.textContent = t('log.count', { count: logEntries.length });
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function addLogEntry(entry) {
+    if (!entry) return;
+    logEntries.push(entry);
+    if (logEntries.length > 500) logEntries.shift();
+    renderLogs();
+  }
+
+  function loadLogs() {
+    bridge.call('getLogs').then(function (result) {
+      logEntries = (result && result.entries) || [];
+      renderLogs();
+    }).catch(function () {});
+  }
+
+  function clearLogs() {
+    bridge.call('clearLogs').then(function () {
+      logEntries = [];
+      renderLogs();
+    }).catch(function () {});
+  }
+
+  function openLogs() {
+    show($('#log-panel'));
+    loadLogs();
+  }
+
+  function closeLogs() {
+    hide($('#log-panel'));
+  }
+
+  /** Write a line into the log of the program. */
+  function writeLog(level, message) {
+    if (!message) return;
+    if (bridge.isNative()) {
+      bridge.call('log', { level: level, message: message }).catch(function () {});
+    }
+  }
+
+  /** The buttons of the log panel. */
+  function wireLogPanel() {
+    var open = $('#toolbar-logs');
+    if (open) open.addEventListener('click', openLogs);
+    var close = $('#log-close');
+    if (close) close.addEventListener('click', closeLogs);
+    var clear = $('#log-clear');
+    if (clear) clear.addEventListener('click', clearLogs);
+  }
+
+  /* ==================================================================
    * Init
    * ================================================================== */
 
@@ -2691,6 +2838,7 @@
     wireGlobalKeys();
     wireConfirm();
     wireFileDrop();
+    wireLogPanel();
 
     // Backend events.
     bridge.on('connection', handleConnectionEvent);
@@ -2709,6 +2857,7 @@
       }
     });
     bridge.on('files', function (p) { renderFiles((p && p.files) || p || []); });
+    bridge.on('log', function (entry) { addLogEntry(entry); });
     bridge.on('host', handleHostEvent);
     bridge.on('cliInstall', function (p) {
       // The command line tool is put on the PATH when the program
@@ -2749,15 +2898,16 @@
     var mockBadge = $('#footer-mock');
     if (mockBadge) mockBadge.hidden = bridge.isNative();
 
-    // MOCK: the backend pushes the current settings on start.
+    // The settings the backend has on disk.  Everything it gives
+    // is taken: the file is the truth, not the page.
     bridge.call('getSettings').then(function (s) {
       if (s && Object.keys(s).length) {
         state.backendSettings = s;
-        Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
-          if (Object.prototype.hasOwnProperty.call(s, key)) state.settings[key] = s[key];
+        Object.keys(s).forEach(function (key) {
+          state.settings[key] = s[key];
         });
         writeSettingsForm();
-        if (state.mode === 'share') fillShareForm();
+        fillShareForm();
       }
     });
 

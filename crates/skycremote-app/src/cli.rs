@@ -52,8 +52,8 @@ enum Command {
         /// How many pictures a second to send.
         #[arg(long, default_value_t = 30)]
         fps: u32,
-        /// How many kilobits a second the pictures may use.
-        #[arg(long, default_value_t = 2000)]
+        /// How many megabits a second the pictures may use.
+        #[arg(long, default_value_t = 8)]
         bitrate: u32,
     },
     /// Open the window and connect to a device.
@@ -140,7 +140,7 @@ fn main() -> anyhow::Result<()> {
                                 device_name: display_name,
                                 port,
                                 fps,
-                                bitrate_bps: bitrate * 1000,
+                                bitrate_bps: bitrate.saturating_mul(1_000_000),
                             },
                         );
                         // The events are only words on the terminal

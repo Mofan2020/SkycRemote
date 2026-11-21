@@ -50,6 +50,19 @@ skycremote control --id 被控端的名字
 
 `control` 打开的就是窗口。直接双击程序，在窗口里点「共享」或者「控制」，也一样。
 
+Tracker 地址在窗口的「设置」里改一次就够了，控制和共享都用那一个。设备 ID
+和显示名字也在「设置」里，共享面板上只看不动。
+
+设置存在程序自己的文件里，重启和重装都还在：
+
+- macOS：`~/.config/skycremote/settings.json`
+- Windows：`%APPDATA%\skycremote\settings.json`
+
+共享的时候改码率和帧率，下一帧就生效，窗口会告诉你生效了没有。Tracker 和设备
+ID 属于一次会话，要下次开始共享时才算数。
+
+窗口右上角有个「日志」：程序做过什么都在里面，可以清掉。
+
 ## 平台
 
 Windows Linux macOS

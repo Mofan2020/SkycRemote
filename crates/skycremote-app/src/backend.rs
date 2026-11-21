@@ -11,10 +11,13 @@
 //! the window's thread picks them up.
 
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender as ChannelSender;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use skycremote_core::capture;
 use skycremote_core::protocol::{InputEvent, Message};
@@ -74,40 +77,133 @@ impl UiRequest {
     }
 }
 
+/// The tracker the program uses when nothing else is said.
+const DEFAULT_TRACKER: &str = "http://127.0.0.1:21115";
+
+/// The bitrate in megabits a second, when nothing else is said.
+const DEFAULT_BITRATE_MBPS: u32 = 8;
+
+/// The frames a second, when nothing else is said.
+const DEFAULT_FRAMERATE: u32 = 30;
+
 /// The things that are remembered between runs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+///
+/// Every setting is kept the way the window wrote it, so a setting
+/// the program itself does not use still survives a restart.  The few
+/// the program needs are read back by name.
+#[derive(Debug, Clone)]
 pub struct Settings {
-    /// Which language the interface is in.
-    pub language: String,
-    /// Which theme the interface uses: `system`, `light` or `dark`.
-    pub theme: String,
-    /// Where the tracker is.
-    pub tracker: String,
-    /// The id of this device.
-    pub device_id: String,
-    /// The name to show for this device.
-    pub device_name: String,
-    /// The picture quality: `auto`, `high`, `balanced` or `smooth`.
-    pub quality: String,
-    /// The bitrate in kilobits per second.
-    pub bitrate: u32,
-    /// The frames per second.
-    pub framerate: u32,
+    /// Everything that was written down.
+    values: BTreeMap<String, Value>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            language: "zh".to_string(),
-            theme: "system".to_string(),
-            tracker: "http://127.0.0.1:21115".to_string(),
-            device_id: String::new(),
-            device_name: String::new(),
-            quality: "balanced".to_string(),
-            bitrate: 8000,
-            framerate: 30,
+        let mut values = BTreeMap::new();
+        values.insert("language".to_string(), json!("zh"));
+        values.insert("theme".to_string(), json!("system"));
+        values.insert("tracker".to_string(), json!(DEFAULT_TRACKER));
+        values.insert("quality".to_string(), json!("auto"));
+        values.insert("bitrate".to_string(), json!(DEFAULT_BITRATE_MBPS));
+        values.insert("framerate".to_string(), json!(DEFAULT_FRAMERATE));
+        Self { values }
+    }
+}
+
+impl Serialize for Settings {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.values.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        Ok(Self { values })
+    }
+}
+
+impl Settings {
+    /// A setting that is text.
+    pub fn text(&self, key: &str) -> String {
+        match self.values.get(key) {
+            Some(Value::String(text)) => text.clone(),
+            _ => Self::default_text(key).to_string(),
         }
+    }
+
+    /// A setting that is a number.
+    pub fn number(&self, key: &str) -> u32 {
+        match self.values.get(key) {
+            Some(Value::Number(number)) => number.as_f64().unwrap_or(0.0).round() as u32,
+            _ => Self::default_number(key),
+        }
+    }
+
+    /// Write a text setting down.
+    pub fn set_text(&mut self, key: &str, value: &str) {
+        self.values
+            .insert(key.to_string(), Value::String(value.to_string()));
+    }
+
+    /// Write a number setting down.
+    pub fn set_number(&mut self, key: &str, value: u32) {
+        self.values.insert(key.to_string(), json!(value));
+    }
+
+    /// Write a setting down the way it came.
+    pub fn put(&mut self, key: &str, value: Value) {
+        self.values.insert(key.to_string(), value);
+    }
+
+    /// The value a text setting starts with.
+    fn default_text(key: &str) -> &'static str {
+        match key {
+            "language" => "zh",
+            "theme" => "system",
+            "tracker" => DEFAULT_TRACKER,
+            "quality" => "auto",
+            _ => "",
+        }
+    }
+
+    /// The value a number setting starts with.
+    fn default_number(key: &str) -> u32 {
+        match key {
+            "bitrate" => DEFAULT_BITRATE_MBPS,
+            "framerate" => DEFAULT_FRAMERATE,
+            _ => 0,
+        }
+    }
+
+    /// Where the tracker is.
+    pub fn tracker(&self) -> String {
+        self.text("tracker")
+    }
+
+    /// The id of this device.
+    pub fn device_id(&self) -> String {
+        self.text("deviceId")
+    }
+
+    /// The name to show for this device.
+    pub fn device_name(&self) -> String {
+        self.text("deviceName")
+    }
+
+    /// The picture quality.
+    pub fn quality(&self) -> String {
+        self.text("quality")
+    }
+
+    /// The bitrate in megabits a second.
+    pub fn bitrate_mbps(&self) -> u32 {
+        self.number("bitrate")
+    }
+
+    /// The frames a second.
+    pub fn framerate(&self) -> u32 {
+        self.number("framerate")
     }
 }
 
@@ -132,16 +228,40 @@ impl Settings {
     /// Read the settings.  A file that is not there, or not readable,
     /// means the defaults, not an error: the program must still start.
     fn load() -> Self {
-        let path = Self::path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        Self::load_from(&Self::path())
+    }
+
+    /// Read the settings from a file.
+    ///
+    /// A file that is not there, or not readable, means the defaults,
+    /// not an error: the program must still start.
+    fn load_from(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
         };
-        serde_json::from_str(&text).unwrap_or_default()
+        let mut settings: Self = serde_json::from_str(&text).unwrap_or_default();
+
+        // The bitrate used to be counted in kilobits.  A number that
+        // big can only be one of those, so it is turned back into
+        // megabits.
+        if settings.number("bitrate") > 1000 {
+            let kilobits = settings.number("bitrate");
+            settings.set_number("bitrate", kilobits / 1000);
+        }
+        settings
     }
 
     /// Write the settings, making the folder if it is not there yet.
+    ///
+    /// The file is written next to the one it replaces and moved over
+    /// it, so that a crash in the middle does not leave half a file
+    /// behind: a half file would be read as no settings at all.
     fn save(&self) -> Result<()> {
-        let path = Self::path();
+        self.save_to(&Self::path())
+    }
+
+    /// Write the settings to a file.
+    fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder).with_context(|| {
                 format!(
@@ -152,7 +272,11 @@ impl Settings {
         }
         let text =
             serde_json::to_string_pretty(self).context("the settings could not be written")?;
-        std::fs::write(&path, text)
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, text).with_context(|| {
+            format!("the settings could not be written: {}", temporary.display())
+        })?;
+        std::fs::rename(&temporary, path)
             .with_context(|| format!("the settings could not be written: {}", path.display()))?;
         Ok(())
     }
@@ -164,6 +288,21 @@ struct Session {
     sender: transport::Sender,
 }
 
+/// One line in the log the window shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    /// When it happened, in milliseconds since the epoch.  The window
+    /// turns it into the time of the day.
+    pub time: u64,
+    /// "info", "warning" or "error".
+    pub level: String,
+    /// What it says.
+    pub message: String,
+}
+
+/// How many lines the log keeps.  Older ones are let go.
+const LOG_LIMIT: usize = 500;
+
 /// The backend of the window.
 pub struct Backend {
     /// Where the answers and the events go.
@@ -174,6 +313,10 @@ pub struct Backend {
     session: Option<Session>,
     /// The signal that stops the share, when this machine is sharing.
     host: Option<tokio_util::sync::CancellationToken>,
+    /// How to change the settings of the share that is running.
+    host_updates: Option<skycremote_core::host::HostUpdates>,
+    /// The lines of the log.
+    logs: Arc<Mutex<Vec<LogEntry>>>,
 }
 
 impl Backend {
@@ -186,7 +329,7 @@ impl Backend {
         let mut settings = Settings::load();
         if let Some(tracker) = tracker {
             if !tracker.trim().is_empty() {
-                settings.tracker = tracker;
+                settings.set_text("tracker", tracker.trim());
             }
         }
         Self {
@@ -194,7 +337,14 @@ impl Backend {
             settings,
             session: None,
             host: None,
+            host_updates: None,
+            logs: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Write a line into the log, and tell the window about it.
+    fn log(&self, level: &str, message: impl AsRef<str>) {
+        log_to(&self.out, &self.logs, level, message);
     }
 
     /// Take the commands as they come.
@@ -220,7 +370,11 @@ impl Backend {
             let answer = self.dispatch(&request.command, &request.payload).await;
             match answer {
                 Ok(value) => self.reply(request.id, true, value),
-                Err(error) => self.reply(request.id, false, error_message(&error)),
+                Err(error) => {
+                    let message = error.to_string();
+                    self.log("error", format!("{} 没有成功：{message}", request.command));
+                    self.reply(request.id, false, error_message(&error));
+                }
             }
         }
     }
@@ -247,6 +401,27 @@ impl Backend {
             "switchScreen" => self.switch_screen(payload).await,
             "sendInput" => self.send_input(payload).await,
             "getSettings" => Ok(json!(self.settings)),
+            "getLogs" => Ok(json!({ "entries": self.log_entries() })),
+            "clearLogs" => {
+                self.clear_logs();
+                Ok(json!({ "ok": true }))
+            }
+            "log" => {
+                let level = payload
+                    .get("level")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("info")
+                    .to_string();
+                let message = payload
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !message.trim().is_empty() {
+                    self.log(&level, message);
+                }
+                Ok(json!({ "ok": true }))
+            }
             "appInfo" => Ok(json!({
                 "name": "SkycRemote",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -282,11 +457,12 @@ impl Backend {
             return Err(anyhow!("there is already a session"));
         }
 
-        let tracker = self.settings.tracker.clone();
+        let tracker = self.settings.tracker();
         self.emit(
             "connection",
             json!({ "state": "connecting", "deviceId": device_id }),
         );
+        self.log("info", format!("正在连 {device_id}，Tracker {tracker}"));
 
         let (sender, receiver) = transport::connect_direct(&tracker, &device_id).await?;
 
@@ -296,6 +472,7 @@ impl Backend {
         let latency = sender.latency_us() as f64 / 1000.0;
 
         self.session = Some(Session { sender });
+        self.log("info", format!("连上了 {device_id}"));
         self.emit(
             "connection",
             json!({
@@ -337,53 +514,51 @@ impl Backend {
 
         let device_id = text_of(payload, "deviceId")
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| self.settings.device_id.clone());
+            .unwrap_or_else(|| self.settings.device_id());
         if device_id.trim().is_empty() {
             return Err(anyhow!("还没有给这台电脑起一个设备 ID"));
         }
         let device_name = text_of(payload, "deviceName")
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| self.settings.device_name.clone());
-        let tracker = text_of(payload, "tracker")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| self.settings.tracker.clone());
+            .unwrap_or_else(|| self.settings.device_name());
 
-        // What was asked for is what is remembered.
-        self.settings.device_id = device_id.clone();
-        self.settings.device_name = device_name.clone();
-        self.settings.tracker = tracker.clone();
-        if let Some(value) = payload.get("fps").and_then(|value| value.as_u64()) {
-            self.settings.framerate = value as u32;
-        }
-        if let Some(value) = payload.get("bitrate").and_then(|value| value.as_u64()) {
-            self.settings.bitrate = value as u32;
-        }
+        // The tracker is one thing in one place: the settings.  What
+        // the window asked for is not taken from here, so that the
+        // control end and the sharing end always use the same one.
+        let tracker = self.settings.tracker();
+
+        // The id and the name are settings too, and they are
+        // remembered.
+        self.settings.set_text("deviceId", &device_id);
+        self.settings.set_text("deviceName", &device_name);
         self.settings.save()?;
 
-        let options = skycremote_core::host::HostOptions {
-            tracker,
-            device_id: device_id.clone(),
-            device_name,
-            port: 21116,
-            fps: self.settings.framerate,
-            bitrate_bps: self.settings.bitrate * 1000,
-        };
-
+        let options = self.host_options();
         let service = skycremote_core::host::HostService::new(options);
         let token = service.token();
+        let updates = service.update_handle();
 
         let (events_tx, mut events_rx) =
             tokio::sync::mpsc::unbounded_channel::<skycremote_core::host::HostEvent>();
         let out = self.out.clone();
+        let logs = Arc::clone(&self.logs);
         tokio::spawn(async move {
             while let Some(event) = events_rx.recv().await {
                 let payload = match event {
-                    skycremote_core::host::HostEvent::Waiting => json!({ "state": "waiting" }),
+                    skycremote_core::host::HostEvent::Waiting => {
+                        log_to(&out, &logs, "info", "在等对面连过来");
+                        json!({ "state": "waiting" })
+                    }
                     skycremote_core::host::HostEvent::PeerJoined { peer, screen } => {
+                        log_to(&out, &logs, "info", format!("对面连进来了：{peer}"));
                         json!({ "state": "sharing", "peer": peer, "screen": screen })
                     }
-                    skycremote_core::host::HostEvent::PeerLeft => json!({ "state": "waiting" }),
+                    skycremote_core::host::HostEvent::PeerLeft => {
+                        log_to(&out, &logs, "info", "对面断开了");
+                        json!({ "state": "waiting" })
+                    }
                     skycremote_core::host::HostEvent::Warning { message } => {
+                        log_to(&out, &logs, "warning", message.clone());
                         json!({ "state": "warning", "message": message })
                     }
                 };
@@ -395,6 +570,15 @@ impl Backend {
         });
 
         self.host = Some(token);
+        self.host_updates = Some(updates);
+        self.log(
+            "info",
+            format!(
+                "开始共享：设备 ID {device_id}，Tracker {tracker}，码率 {} Mbps，帧率 {}",
+                self.settings.bitrate_mbps(),
+                self.settings.framerate()
+            ),
+        );
         self.emit("host", json!({ "state": "waiting" }));
         Ok(json!({ "ok": true, "deviceId": device_id }))
     }
@@ -403,7 +587,9 @@ impl Backend {
     fn stop_host(&mut self) -> Result<Value> {
         if let Some(token) = self.host.take() {
             token.cancel();
+            self.log("info", "共享已经停了");
         }
+        self.host_updates = None;
         self.emit("host", json!({ "state": "stopped" }));
         Ok(json!({ "ok": true }))
     }
@@ -513,34 +699,102 @@ impl Backend {
     // MARK: - The settings
 
     /// Remember the settings.
+    ///
+    /// The settings the program uses are read by name; everything else
+    /// is kept the way it came, so a setting the window knows and the
+    /// program does not still survives a restart.
     fn save_settings(&mut self, payload: &Value) -> Result<Value> {
+        let tracker_before = self.settings.tracker();
+
         if let Some(value) = payload.get("language").and_then(|value| value.as_str()) {
-            self.settings.language = value.to_string();
+            self.settings.set_text("language", value);
         }
         if let Some(value) = payload.get("theme").and_then(|value| value.as_str()) {
-            self.settings.theme = value.to_string();
+            self.settings.set_text("theme", value);
         }
         if let Some(value) = payload.get("tracker").and_then(|value| value.as_str()) {
-            self.settings.tracker = value.to_string();
+            self.settings.set_text("tracker", value.trim());
         }
         if let Some(value) = payload.get("deviceId").and_then(|value| value.as_str()) {
-            self.settings.device_id = value.to_string();
+            self.settings.set_text("deviceId", value.trim());
         }
         if let Some(value) = payload.get("deviceName").and_then(|value| value.as_str()) {
-            self.settings.device_name = value.to_string();
+            self.settings.set_text("deviceName", value.trim());
         }
         if let Some(value) = payload.get("quality").and_then(|value| value.as_str()) {
-            self.settings.quality = value.to_string();
+            self.settings.set_text("quality", value);
         }
         if let Some(value) = payload.get("bitrate").and_then(|value| value.as_u64()) {
-            self.settings.bitrate = value as u32;
+            self.settings.set_number("bitrate", value as u32);
         }
         if let Some(value) = payload.get("framerate").and_then(|value| value.as_u64()) {
-            self.settings.framerate = value as u32;
+            self.settings.set_number("framerate", value as u32);
         }
+        if let Some(object) = payload.as_object() {
+            for (key, value) in object {
+                match key.as_str() {
+                    "language" | "theme" | "tracker" | "deviceId" | "deviceName" | "quality"
+                    | "bitrate" | "framerate" => {}
+                    _ => self.settings.put(key, value.clone()),
+                }
+            }
+        }
+
         self.settings.save()?;
         self.emit("settings", json!(self.settings));
-        Ok(json!({ "ok": true }))
+
+        // What became of the settings that were just saved.  The
+        // numbers of the pictures can be changed while the share is
+        // on; the tracker and the device id belong to a session and
+        // wait for the next one.
+        let mut applied = Vec::new();
+        let bitrate = self.settings.bitrate_mbps();
+        let framerate = self.settings.framerate();
+        if let Some(updates) = self.host_updates.clone() {
+            if updates.send(self.host_options()) {
+                applied.push(format!("码率 {bitrate} Mbps、帧率 {framerate} 已经生效"));
+            }
+        }
+        if tracker_before != self.settings.tracker() {
+            applied
+                .push("Tracker 改了，正在进行的共享还是旧的，要下次开始共享时才算数".to_string());
+        }
+        for line in &applied {
+            self.log("info", line.clone());
+        }
+
+        Ok(json!({
+            "ok": true,
+            "settings": self.settings,
+            "applied": applied,
+        }))
+    }
+
+    /// The share, with the settings as they are now.
+    fn host_options(&self) -> skycremote_core::host::HostOptions {
+        skycremote_core::host::HostOptions {
+            tracker: self.settings.tracker(),
+            device_id: self.settings.device_id(),
+            device_name: self.settings.device_name(),
+            port: 21116,
+            fps: self.settings.framerate(),
+            bitrate_bps: self.settings.bitrate_mbps().saturating_mul(1_000_000),
+        }
+    }
+
+    /// The lines of the log.
+    fn log_entries(&self) -> Vec<LogEntry> {
+        match self.logs.lock() {
+            Ok(list) => list.clone(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Let the log go.
+    fn clear_logs(&self) {
+        if let Ok(mut list) = self.logs.lock() {
+            list.clear();
+        }
     }
 
     /// The devices the tracker knows about.
@@ -551,11 +805,11 @@ impl Backend {
     /// before.
     async fn list_devices(&mut self) -> Result<Value> {
         let mut devices = Vec::new();
-        let id = self.settings.device_id.clone();
+        let id = self.settings.device_id();
         if !id.is_empty() {
             devices.push(json!({
                 "id": id,
-                "name": self.settings.device_name,
+                "name": self.settings.device_name(),
                 "online": false,
             }));
         }
@@ -563,26 +817,41 @@ impl Backend {
     }
 
     /// Change how the picture is made.
+    ///
+    /// The numbers can be changed while the share is on, so the new
+    /// ones are handed to the share that is running.
     fn set_quality(&mut self, command: &str, payload: &Value) -> Result<Value> {
         match command {
             "setQuality" => {
                 if let Some(value) = payload.get("quality").and_then(|value| value.as_str()) {
-                    self.settings.quality = value.to_string();
+                    self.settings.set_text("quality", value);
                 }
             }
             "setBitrate" => {
                 if let Some(value) = payload.get("bitrate").and_then(|value| value.as_u64()) {
-                    self.settings.bitrate = value as u32;
+                    self.settings.set_number("bitrate", value as u32);
                 }
             }
             "setFramerate" => {
                 if let Some(value) = payload.get("framerate").and_then(|value| value.as_u64()) {
-                    self.settings.framerate = value as u32;
+                    self.settings.set_number("framerate", value as u32);
                 }
             }
             _ => {}
         }
         self.settings.save()?;
+        if let Some(updates) = self.host_updates.clone() {
+            if updates.send(self.host_options()) {
+                self.log(
+                    "info",
+                    format!(
+                        "码率 {} Mbps、帧率 {} 已经生效",
+                        self.settings.bitrate_mbps(),
+                        self.settings.framerate()
+                    ),
+                );
+            }
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -634,6 +903,40 @@ fn emit_to(out: &ChannelSender<Out>, name: &str, payload: Value) {
         name: name.to_string(),
         payload,
     });
+}
+
+/// Write a line into the log, and tell the window about it.
+///
+/// The log belongs to the program, not to the window: the window can
+/// show it, but it does not have to be open for a line to be kept.
+fn log_to(
+    out: &ChannelSender<Out>,
+    logs: &Arc<Mutex<Vec<LogEntry>>>,
+    level: &str,
+    message: impl AsRef<str>,
+) {
+    let entry = LogEntry {
+        time: now_millis(),
+        level: level.to_string(),
+        message: message.as_ref().to_string(),
+    };
+    if let Ok(mut list) = logs.lock() {
+        list.push(entry.clone());
+        if list.len() > LOG_LIMIT {
+            let extra = list.len() - LOG_LIMIT;
+            list.drain(0..extra);
+        }
+    }
+    let payload = serde_json::to_value(&entry).unwrap_or(Value::Null);
+    emit_to(out, "log", payload);
+}
+
+/// The time of the day, in milliseconds since the epoch.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Put one picture on the screen of the window.
@@ -696,4 +999,68 @@ impl std::error::Error for NotDone {}
 /// The error for a part of the program that is not there yet.
 fn not_done(feature: &'static str) -> anyhow::Error {
     anyhow::Error::new(NotDone(feature))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder of its own for the test, so that the real settings of
+    /// this machine are never touched.
+    fn scratch(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("skycremote-settings-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("the scratch folder could not be made");
+        folder.join("settings.json")
+    }
+
+    /// The settings have to survive the trip through the file.  This
+    /// is the whole point of the file: what was set stays set.
+    #[test]
+    fn settings_survive_the_file() {
+        let path = scratch("round-trip");
+
+        let mut settings = Settings::default();
+        settings.set_text("tracker", "http://example.test:1234");
+        settings.set_text("language", "en");
+        settings.set_number("bitrate", 42);
+        settings.set_number("framerate", 24);
+        settings.put("fileDownloadDir", json!("/tmp/where"));
+        settings
+            .save_to(&path)
+            .expect("the settings could not be written");
+
+        let read = Settings::load_from(&path);
+        assert_eq!(read.tracker(), "http://example.test:1234");
+        assert_eq!(read.text("language"), "en");
+        assert_eq!(read.bitrate_mbps(), 42);
+        assert_eq!(read.framerate(), 24);
+        assert_eq!(read.text("fileDownloadDir"), "/tmp/where");
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("no folder"));
+    }
+
+    /// The bitrate used to be counted in kilobits.  A file from back
+    /// then must not be read as thousands of megabits.
+    #[test]
+    fn an_old_bitrate_is_turned_back_into_megabits() {
+        let path = scratch("old-bitrate");
+        std::fs::write(&path, r#"{"bitrate": 8000}"#).expect("the file could not be written");
+
+        let read = Settings::load_from(&path);
+        assert_eq!(read.bitrate_mbps(), 8);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("no folder"));
+    }
+
+    /// A file that is not there is not an error: the program starts
+    /// with the settings it starts with.
+    #[test]
+    fn a_missing_file_gives_the_defaults() {
+        let path = scratch("missing").with_extension("nothing.json");
+        let read = Settings::load_from(&path);
+        assert_eq!(read.tracker(), DEFAULT_TRACKER);
+        assert_eq!(read.bitrate_mbps(), DEFAULT_BITRATE_MBPS);
+    }
 }
