@@ -577,6 +577,7 @@ impl Backend {
             "stopHost" => self.stop_host(),
             "hostStatus" => Ok(json!({ "sharing": self.host.is_some() })),
             "listScreens" => self.list_screens(),
+            "listRemoteScreens" => self.list_remote_screens().await,
             "switchScreen" => self.switch_screen(payload).await,
             "sendInput" => self.send_input(payload).await,
             "getSettings" => Ok(json!(self.settings)),
@@ -1230,6 +1231,16 @@ impl Backend {
             })
             .collect();
         Ok(json!(screens))
+    }
+
+    /// Ask the other end what screens it has.
+    ///
+    /// The screens of this machine are of no use while somebody else is
+    /// being controlled: the ones that matter are the ones the picture
+    /// comes from.
+    async fn list_remote_screens(&mut self) -> Result<Value> {
+        self.send(&Message::ListScreens).await?;
+        Ok(json!({ "ok": true }))
     }
 
     /// Look at another screen.

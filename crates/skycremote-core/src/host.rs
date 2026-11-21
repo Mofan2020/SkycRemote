@@ -343,6 +343,14 @@ impl HostService {
             screen: shared.name.clone(),
         });
 
+        // The other end wants to know what screens there are, so that
+        // the screen menu has something in it.  It is sent right away
+        // rather than waiting to be asked.
+        {
+            let list: Vec<ScreenInfo> = screens.iter().map(screen_to_info).collect();
+            let _ = send(&sender, &Message::Screens { screens: list }).await;
+        }
+
         // The pictures go out on their own task, because they are made at
         // the frame rate and the input has to be answered the moment it
         // arrives.

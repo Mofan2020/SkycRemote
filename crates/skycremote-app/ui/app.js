@@ -789,9 +789,10 @@
     var canvas = $('#remote-canvas');
     if (canvas && !bridge.isNative()) bridge.mock.startFrames(canvas);
 
-    bridge.call('listScreens').then(function (screens) {
-      state.screens = normaliseScreens(screens);
-      renderScreenMenu();
+    // The screens that matter are the ones of the machine being
+    // controlled, so the other end is asked for them.
+    bridge.call('listRemoteScreens').then(function () {
+      /* the answer comes back as an event */
     }).catch(function () { /* no screens yet */ });
 
     var stage = $('#remote-stage');

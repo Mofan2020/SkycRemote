@@ -289,6 +289,14 @@
       case 'listScreens':
         return delay(120, FAKE_SCREENS.slice());
 
+      case 'listRemoteScreens':
+        // The other end answers with an event, the same way the real
+        // backend does it.
+        delay(80, { ok: true }).then(function () {
+          emitLocal('screens', { screens: FAKE_SCREENS.slice() });
+        });
+        return delay(80, { ok: true });
+
       case 'switchScreen':
         mockState.screen = payload.index;
         return delay(60, { ok: true, index: payload.index });
