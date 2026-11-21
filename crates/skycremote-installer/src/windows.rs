@@ -272,6 +272,18 @@ pub fn install_location(scope: Scope) -> Option<PathBuf> {
     }
 }
 
+/// The version of the program that is installed, as the entry in
+/// "Apps and Features" says.
+///
+/// It is empty when there is nothing installed, or when the entry
+/// does not say which version it is.
+pub fn installed_version(scope: Scope) -> Option<String> {
+    let key = open_key(scope.root(), scope.uninstall_key()).ok()?;
+    let version = read_string(key, "DisplayVersion").ok();
+    let _ = unsafe { RegCloseKey(key) };
+    version
+}
+
 /// Make a shortcut that points at a program.
 ///
 /// It goes into the Start menu and onto the desktop.  A shortcut that

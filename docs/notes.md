@@ -272,3 +272,51 @@ macOS 换成 `SCROLL_UNITS_PIXEL`，直接按像素投，手感和本机一致�
 以及零头会累积到出格；实际滚动的速度、加速度、不同桌面环境的差异都还没试。
 
 
+
+## WebView2 的数据目录不能放在程序旁边
+
+Windows 上把程序装进 `C:\Program Files` 之后启动，窗口开不出来，报
+`WebView2 error: WindowsError(0x80070005) 拒绝访问`。
+
+原因是 WebView2 默认把自己的用户数据放在**可执行文件旁边**，也就是
+`C:\Program Files\SkycRemote`。普通用户在那里没有写权限，WebView2 建不出
+自己的缓存目录就直接报「拒绝访问」—— 报的是 WebView2 的错，不是 wry 的错，
+所以只看「WebView2 error」很难想到是权限。
+
+修法是把数据目录显式指到用户自己的地方：
+`%LOCALAPPDATA%\SkycRemote\WebView`（安装程序用同办法的 `SetupWebView`）。
+用 `wry::WebContext::new(Some(path))` + `WebViewBuilder::new_with_web_context`。
+
+WebContext 是被 builder 借走的（`&'a mut WebContext`），所以它必须活得比
+webview 长：声明顺序放在前面，让它最后被 drop。窗口本身也一样，它也是被
+`build_as_child(&window)` 借走的。
+
+## 平台专属的代码怎么在本地验
+
+`cargo clippy --target x86_64-pc-windows-msvc` 在这台机器上跑不动整个 app
+crate：`aws-lc-sys` 要编译 C 代码，缺 Windows 头文件（`windows.h`），
+在 macOS 上补不了。core / tracker / installer 不受影响，能直接查。
+
+app crate 里只有 UI 那部分是平台专属的。验它的办法是另起一个最小工程，只依赖
+`wry` 和 `tao`，把出问题的那几行抄进去，用
+`cargo check --target x86_64-pc-windows-msvc` 编一遍。借用关系对不对，编译器
+会告诉你；真正的运行时行为还得靠 CI 的 windows runner 和真机。
+
+
+## 安装器发现「已经装过」的时候，要问，不要失败
+
+装过一次之后再跑安装程序是很平常的事（升级、换机器、装错了重装）。这时安装器
+要做的不是报错退出，而是先问一句「要换成新的吗」。
+
+判断「已经装过」靠的是「应用和功能」里的那条记录：它写着安装位置
+（`InstallLocation`）和版本（`DisplayVersion`）。读这条记录比猜目录可靠。
+但要注意记录可能比文件活得久 —— 文件夹没了就不算装过，要再确认一次目录在。
+
+问的时候要把话说清楚：换掉的是程序文件，设置和命令行工具留着不动，正在运行的
+SkycRemote 会被关掉。关掉它是有必要的：Windows 不让一个正在运行的程序的文件被
+写覆盖，直接写会报「另一个程序正在使用此文件」。先 `taskkill` 再写才装得上。
+
+换装的位置跟原来不一样时（比如原来只为你装，这次装成所有用户），旧的那一份
+不要偷偷删掉 —— 把它的位置说出来，让人自己在「应用和功能」里卸。程序替人做
+删除决定是危险的事。
+

@@ -116,6 +116,11 @@ fn install_to(dir: &Path, scope: skycremote_installer::windows::Scope) -> Result
         return Err(format!("{} 建不出来：{error}", dir.display()));
     }
 
+    // A program that is running keeps its own files open, and Windows
+    // does not let them be written over.  A copy that is in the way is
+    // closed first, so that replacing what is installed works.
+    stop_running_program();
+
     // The program itself and the command line tool.
     for file in PAYLOAD.files() {
         let relative = file.path();
@@ -125,7 +130,10 @@ fn install_to(dir: &Path, scope: skycremote_installer::windows::Scope) -> Result
         }
         let bytes = file.contents();
         if let Err(error) = std::fs::write(&target, bytes) {
-            return Err(format!("{} 写不进去：{error}", target.display()));
+            return Err(format!(
+                "{} 写不进去：{error}。\n\n如果 SkycRemote 正在运行，请先把它关掉再装一次。",
+                target.display()
+            ));
         }
     }
 
@@ -157,6 +165,21 @@ fn install_to(dir: &Path, scope: skycremote_installer::windows::Scope) -> Result
     }
 
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// Close a running copy of the program.
+///
+/// Windows does not let the files of a running program be written
+/// over.  The person is asked before anything is replaced, so closing
+/// the program here is part of that answer.
+#[cfg(target_os = "windows")]
+fn stop_running_program() {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/IM", "SkycRemote.exe", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    std::thread::sleep(std::time::Duration::from_millis(400));
 }
 
 /// Where the shortcuts go.
@@ -350,8 +373,15 @@ mod windows {
         let scale_factor = window.scale_factor();
         let inner_size = window.inner_size().to_logical::<f64>(scale_factor);
 
+        // WebView2 keeps its data next to the program unless it is
+        // told otherwise, and "next to the program" is Program Files
+        // when the program is installed for everybody — a place where
+        // an ordinary user is not allowed to write.  The folder is
+        // given explicitly: one the user owns.
+        let mut web_context = wry::WebContext::new(Some(user_data_folder()));
+
         let (command_tx, command_rx) = std::sync::mpsc::channel::<(u64, String, String)>();
-        let builder = WebViewBuilder::new()
+        let builder = WebViewBuilder::new_with_web_context(&mut web_context)
             .with_bounds(wry::Rect {
                 position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
                 size: inner_size.into(),
@@ -413,6 +443,7 @@ mod windows {
             while let Ok((id, command, payload)) = command_rx.try_recv() {
                 let value = match command.as_str() {
                     "install" => do_install(&payload, control_flow),
+                    "existingInstall" => existing_installs(),
                     "defaultPath" => serde_json::json!({
                         "ok": true,
                         "user": super::default_install_dir(Scope::User).to_string_lossy(),
@@ -476,13 +507,75 @@ mod windows {
         }
 
         match super::install_to(&dir, scope) {
-            Ok(where_to) => serde_json::json!({
-                "ok": true,
-                "path": where_to,
-                "message": "安装完成",
-            }),
+            Ok(where_to) => {
+                let mut message = String::from("安装完成");
+                // A copy made for the other kind of installation may
+                // still be on the machine.  It is said out loud
+                // instead of being taken away behind the person's
+                // back.
+                let other = match scope {
+                    Scope::User => Scope::AllUsers,
+                    Scope::AllUsers => Scope::User,
+                };
+                if let Some(path) = skycremote_installer::windows::install_location(other) {
+                    if path.is_dir() {
+                        message.push_str(&format!(
+                            "\n\n之前装的那一份还在 {}，想换掉可以在「应用和功能」里卸载它。",
+                            path.display()
+                        ));
+                    }
+                }
+                serde_json::json!({
+                    "ok": true,
+                    "path": where_to,
+                    "message": message,
+                })
+            }
             Err(error) => serde_json::json!({ "ok": false, "message": error }),
         }
+    }
+
+    /// The copies of the program that are already on this machine.
+    ///
+    /// The entry in "Apps and Features" says where a copy is and which
+    /// version it is, so the window can say "there is already one
+    /// there" and ask whether it should be replaced.
+    fn existing_installs() -> serde_json::Value {
+        let mut installs = Vec::new();
+        for scope in [Scope::User, Scope::AllUsers] {
+            let Some(path) = skycremote_installer::windows::install_location(scope) else {
+                continue;
+            };
+            // The entry can outlive the files it points at, and a
+            // folder that is gone is not an installation.
+            if !path.is_dir() {
+                continue;
+            }
+            let version =
+                skycremote_installer::windows::installed_version(scope).unwrap_or_default();
+            installs.push(serde_json::json!({
+                "scope": match scope {
+                    Scope::User => "user",
+                    Scope::AllUsers => "allUsers",
+                },
+                "scopeLabel": scope.label(),
+                "path": path.to_string_lossy(),
+                "version": version,
+            }));
+        }
+        serde_json::json!({
+            "ok": true,
+            "installed": !installs.is_empty(),
+            "installs": installs,
+        })
+    }
+
+    /// The folder the web view keeps its data in.
+    fn user_data_folder() -> PathBuf {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("SkycRemote").join("SetupWebView")
     }
 
     /// The page of the installer, with the stylesheet folded into it.

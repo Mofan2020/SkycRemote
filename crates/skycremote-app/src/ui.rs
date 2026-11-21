@@ -77,6 +77,19 @@ impl Default for Options {
     }
 }
 
+/// The folder the web view keeps its data in.
+///
+/// It is in the user's own area, so that the program can be installed
+/// in a place where the user is not allowed to write — "Program Files"
+/// is exactly that place.
+#[cfg(target_os = "windows")]
+fn user_data_folder() -> std::path::PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("SkycRemote").join("WebView")
+}
+
 /// Read one of the interface files.
 fn read(path: &str) -> String {
     match UI.get_file(path) {
@@ -224,7 +237,20 @@ pub fn run(options: Options) -> Result<()> {
     let scale_factor = window.scale_factor();
     let inner_size = window.inner_size().to_logical::<f64>(scale_factor);
 
-    let builder = WebViewBuilder::new()
+    // WebView2 keeps its data next to the program unless it is told
+    // otherwise, and "next to the program" is Program Files when the
+    // program is installed for everybody — a place where an ordinary
+    // user is not allowed to write.  That is what makes the window
+    // fail to open with "access denied", so the folder is given
+    // explicitly: one the user owns.
+    #[cfg(target_os = "windows")]
+    let mut web_context = wry::WebContext::new(Some(user_data_folder()));
+    #[cfg(target_os = "windows")]
+    let builder = WebViewBuilder::new_with_web_context(&mut web_context);
+    #[cfg(not(target_os = "windows"))]
+    let builder = WebViewBuilder::new();
+
+    let builder = builder
         .with_bounds(wry::Rect {
             position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
             size: inner_size.into(),

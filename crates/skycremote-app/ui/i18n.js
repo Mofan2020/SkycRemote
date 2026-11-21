@@ -368,7 +368,8 @@
       'toast.virtualScreenCreated': '虚拟屏已创建',
       'toast.virtualScreenRemoved': '虚拟屏已移除',
       'toast.screenSwitched': '已切换到 {name}',
-      'toast.mockNotice': '演示模式：后端尚未接入，数据为本地假数据'
+      'toast.mockNotice': '演示模式：后端尚未接入，数据为本地假数据',
+      'toast.notReady': '这个功能还没接上'
     },
 
     en: {
@@ -720,7 +721,8 @@
       'toast.virtualScreenCreated': 'Virtual screen created',
       'toast.virtualScreenRemoved': 'Virtual screen removed',
       'toast.screenSwitched': 'Switched to {name}',
-      'toast.mockNotice': 'Demo mode: the backend is not wired up yet, all data is local mock data'
+      'toast.mockNotice': 'Demo mode: the backend is not wired up yet, all data is local mock data',
+      'toast.notReady': 'This one is not ready yet'
     }
   };
 

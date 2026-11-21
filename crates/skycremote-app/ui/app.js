@@ -1179,7 +1179,7 @@
       return;
     }
     // MOCK: the rest of the shell items need a real desktop backend.
-    toast(t('toast.mockNotice'), 'info');
+    toast(t('toast.notReady'), 'info');
   }
 
   /* ==================================================================
@@ -1231,9 +1231,10 @@
     // MOCK: real listing comes from the peer over the file-transfer channel.
     bridge.call('listFiles', { path: state.currentPath }).then(function (files) {
       renderFiles(files || []);
-    }).catch(function () {
+    }).catch(function (error) {
       if (list) list.innerHTML = '';
-      toast(t('files.error.read'), 'error');
+      if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
+      else toast(t('files.error.read'), 'error');
     });
   }
 
@@ -1426,7 +1427,7 @@
         queueTransfer(files[i].name, files[i].size, 'up');
       }
       // MOCK: the real upload starts once the backend accepts the file.
-      toast(t('toast.mockNotice'), 'info');
+      toast(t('toast.notReady'), 'info');
     });
 
     var uploadBtn = $('#file-upload-btn');
@@ -1479,6 +1480,8 @@
         reply = 'command not found: ' + command;
       }
       reply.split('\n').forEach(function (line) { if (line) terminalWrite(line, 'term-out'); });
+    }).catch(function (error) {
+      if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
     });
   }
 
@@ -1775,7 +1778,10 @@
     togglePrivacyScreen: function () {
       state.privacyScreen = !state.privacyScreen;
       applyPrivacyScreen();
-      return bridge.call('togglePrivacyScreen', { enabled: state.privacyScreen });
+      return bridge.call('togglePrivacyScreen', { enabled: state.privacyScreen })
+        .catch(function (error) {
+          if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
+        });
     },
 
     /** Remote power action: 'shutdown' | 'restart' | 'sleep' | 'logoff'. */
@@ -1786,6 +1792,8 @@
           sleep: t('power.sleep'), logoff: t('power.logoff')
         };
         toast(t('power.sent', { action: labels[action] || action }), 'info');
+      }).catch(function (error) {
+        if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
       });
     },
 
@@ -2252,7 +2260,7 @@
     var browse = $('#file-browse-btn');
     if (browse) browse.addEventListener('click', function () {
       // MOCK: the real button opens a native folder picker.
-      toast(t('toast.mockNotice'), 'info');
+      toast(t('toast.notReady'), 'info');
     });
   }
 
@@ -2308,7 +2316,7 @@
           toast(t('toast.terminalCopied'), 'success');
         }).catch(function () { toast(t('files.error.download'), 'error'); });
       } else {
-        toast(t('toast.mockNotice'), 'info');
+        toast(t('toast.notReady'), 'info');
       }
     });
 
@@ -2716,8 +2724,30 @@
       leaveRemoteView();
     });
 
+    // The backend says in its own words that a part of the program
+    // is not there yet.  The page has its own wording for it, so the
+    // error is turned into that wording once, here, and every caller
+    // sees the same thing.
+    var nativeCall = bridge.call;
+    bridge.call = function (command, payload) {
+      return nativeCall(command, payload).catch(function (error) {
+        if (error && error.code === 'notImplemented') {
+          var ready = new Error(t('toast.notReady'));
+          ready.code = 'notImplemented';
+          throw ready;
+        }
+        throw error;
+      });
+    };
+
     // MOCK: seed the device list so the screen is not empty.
     loadDevices();
+
+    // The mock badge is only for when there is no backend: that is
+    // when the page is opened in a browser on its own.  With the real
+    // program behind it, the badge is a lie and is taken away.
+    var mockBadge = $('#footer-mock');
+    if (mockBadge) mockBadge.hidden = bridge.isNative();
 
     // MOCK: the backend pushes the current settings on start.
     bridge.call('getSettings').then(function (s) {

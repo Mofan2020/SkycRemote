@@ -52,6 +52,16 @@
     </ul>
   </section>
 
+  <p class="notice" id="existing" hidden></p>
+
+  <div class="confirm" id="confirm" hidden>
+    <p class="confirm-text" id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button class="btn primary" id="confirm-yes" type="button">替换</button>
+      <button class="btn ghost" id="confirm-no" type="button">取消</button>
+    </div>
+  </div>
+
   <p class="status" id="status" hidden></p>
 
   <footer class="actions">
@@ -91,6 +101,11 @@
   var status = document.getElementById('status');
   var installButton = document.getElementById('install');
   var cancelButton = document.getElementById('cancel');
+  var existingLine = document.getElementById('existing');
+  var confirmBox = document.getElementById('confirm');
+  var confirmText = document.getElementById('confirm-text');
+  var confirmYes = document.getElementById('confirm-yes');
+  var confirmNo = document.getElementById('confirm-no');
 
   function say(text, kind) {
     status.textContent = text;
@@ -101,11 +116,43 @@
   var defaults = { user: '', allUsers: '' };
   var scopeInputs = document.querySelectorAll('input[name="scope"]');
 
+  // The copies of the program that are already on this machine.
+  var existing = { installed: false, installs: [] };
+
   function chosenScope() {
     for (var i = 0; i < scopeInputs.length; i++) {
       if (scopeInputs[i].checked) return scopeInputs[i].value;
     }
     return 'user';
+  }
+
+  // The installed copy that belongs to the same kind of installation
+  // the person has chosen.  That is the one that would be replaced.
+  function existingFor(scope) {
+    for (var i = 0; i < existing.installs.length; i++) {
+      if (existing.installs[i].scope === scope) return existing.installs[i];
+    }
+    return null;
+  }
+
+  function versionText(one) {
+    return one.version ? 'v' + one.version : '版本不详';
+  }
+
+  function showExisting() {
+    if (!existing.installed) {
+      existingLine.hidden = true;
+      installButton.textContent = '安装';
+      return;
+    }
+    var parts = [];
+    for (var i = 0; i < existing.installs.length; i++) {
+      var one = existing.installs[i];
+      parts.push(one.scopeLabel + '的 ' + versionText(one) + '（' + one.path + '）');
+    }
+    existingLine.textContent = '这台机器上已经装过：' + parts.join('；') + '。';
+    existingLine.hidden = false;
+    if (existingFor(chosenScope())) installButton.textContent = '替换安装';
   }
 
   // The path follows the choice: one person installs into their own
@@ -119,6 +166,7 @@
         ? '装进 Program Files，这台机器上的每个账户都能用。Windows 会问你要管理员权限。'
         : '装在你自己的账户下，不需要管理员密码。';
     }
+    showExisting();
   }
 
   Array.prototype.forEach.call(scopeInputs, function (input) {
@@ -136,7 +184,15 @@
     }
   }).catch(function () {});
 
-  installButton.addEventListener('click', function () {
+  // The copies that are already there are looked for before anything
+  // is done, so that the person is asked instead of being told that
+  // it failed.
+  request('existingInstall').then(function (result) {
+    if (result && result.installs) existing = result;
+    showExisting();
+  }).catch(function () {});
+
+  function doInstall(scope) {
     var path = (pathInput.value || '').trim();
     if (!path) {
       say('请先填一个安装位置', 'error');
@@ -146,7 +202,6 @@
     installButton.textContent = '安装中…';
     say('正在安装…', 'info');
 
-    var scope = chosenScope();
     request('install', { path: path, scope: scope }).then(function (result) {
       if (result && result.ok) {
         installButton.textContent = '安装完成';
@@ -166,6 +221,34 @@
       installButton.textContent = '安装';
       say(error.message || '安装没有成功', 'error');
     });
+  }
+
+  installButton.addEventListener('click', function () {
+    var scope = chosenScope();
+    var same = existingFor(scope);
+
+    // A copy that is already there is not overwritten behind the
+    // person's back: the question comes first.
+    if (same && !confirmBox.dataset.agreed) {
+      confirmText.textContent =
+        '已经装过一份 ' + versionText(same) + '（' + same.path + '）。要换成新的吗？' +
+        '程序文件会被换掉，你的设置和命令行工具留着不动。' +
+        '正在运行的 SkycRemote 会被关掉。';
+      confirmBox.hidden = false;
+      return;
+    }
+    doInstall(scope);
+  });
+
+  confirmYes.addEventListener('click', function () {
+    confirmBox.dataset.agreed = 'yes';
+    confirmBox.hidden = true;
+    doInstall(chosenScope());
+  });
+
+  confirmNo.addEventListener('click', function () {
+    confirmBox.hidden = true;
+    confirmBox.removeAttribute('data-agreed');
   });
 
   cancelButton.addEventListener('click', function () {
