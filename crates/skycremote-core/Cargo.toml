@@ -60,8 +60,19 @@ objc2-app-kit = "0.3"
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = "0.62"
+# The features are the ones the input injector needs: SendInput and the
+# keyboard and mouse flags come from Win32_UI_Input_KeyboardAndMouse,
+# the size of the desktop from Win32_UI_WindowsAndMessaging.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows-core = "0.100"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+# The X11 client library and its XTEST extension, loaded at run time
+# rather than linked against, so a machine without them still builds —
+# it just says so when it cannot inject.
+x11-dl = "2"

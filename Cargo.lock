@@ -4393,6 +4393,7 @@ dependencies = [
  "tokio-util",
  "windows",
  "windows-core 0.100.0",
+ "x11-dl",
  "x25519-dalek",
  "xcap",
 ]

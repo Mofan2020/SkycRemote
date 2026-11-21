@@ -111,6 +111,11 @@ pub enum InputError {
     /// 系统不认这个键码。
     #[error("the key code {0} means nothing on this platform")]
     UnknownKey(u32),
+    /// 系统不认这个鼠标键。
+    ///
+    /// 线上只有左、中、右三个键，别的数字没有对应的键。
+    #[error("the mouse button {0} is not one this platform knows")]
+    UnknownButton(u8),
     /// 系统拒绝了这次注入。
     ///
     /// macOS 上最常见的原因是程序没有辅助功能权限。
@@ -188,6 +193,20 @@ pub fn global_position(screen: &Screen, x: u32, y: u32) -> (f64, f64) {
     )
 }
 
+/// 把捕获那张图里的像素换成桌面上的位置 —— 在那些用物理像素数位置
+/// 的平台上。
+///
+/// Windows 的屏幕位置（`origin_x` / `origin_y`）和抓下来的那张图是
+/// 同一个单位：物理像素。所以这里不用折算，加上去就是桌面上真正的
+/// 那个位置。macOS 和 X11 用的是 [`global_position`]，那两个平台的
+/// 位置是逻辑单位（点和 X11 的坐标）。
+pub fn global_position_in_pixels(screen: &Screen, x: u32, y: u32) -> (f64, f64) {
+    (
+        screen.origin_x + f64::from(x),
+        screen.origin_y + f64::from(y),
+    )
+}
+
 /// 这个进程能不能往系统里注入输入。
 ///
 /// macOS 上要往系统里塞键盘鼠标事件，得先拿到「辅助功能」权限。
@@ -204,10 +223,56 @@ pub fn can_inject() -> bool {
 
 /// 这个进程能不能往系统里注入输入。
 ///
-/// 除了 macOS 以外还没有能注入的平台，所以这里是说不行。
-#[cfg(not(target_os = "macos"))]
+/// Windows 上没有要开的开关：能塞进去就能塞进去。真正会挡住的是
+/// UIPI（普通权限的程序不能往管理员权限的窗口里塞输入），而那个
+/// 只有在真的发事件的时候才看得出来 —— 塞不进去的时候
+/// [`windows::WindowsInjector`] 会把这件事说出来。
+#[cfg(target_os = "windows")]
+pub fn can_inject() -> bool {
+    true
+}
+
+/// 这个进程能不能往系统里注入输入。
+///
+/// Linux 上要的是一个 X11 会话：XTEST 是 X11 的扩展，Wayland 不走
+/// 这条路。
+#[cfg(target_os = "linux")]
+pub fn can_inject() -> bool {
+    linux::can_inject()
+}
+
+/// 这个进程能不能往系统里注入输入。
+///
+/// 除了上面这几个系统以外还没有能注入的平台，所以这里是说不行。
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn can_inject() -> bool {
     false
+}
+
+/// 不能注入的时候，告诉用户该做什么。
+///
+/// 说得具体一点，用户才知道要动哪里 —— 「不能注入」本身没有用。
+pub fn injection_hint() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "在「系统设置 → 隐私与安全性 → 辅助功能」里把这个程序打开，\
+         然后重开一次这个程序。"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Windows 上只有权限比目标程序低的时候才塞不进去输入：\
+         把被控端以管理员身份运行就能解决。"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "需要一个 X11 会话（DISPLAY 要指得到显示服务器），\
+         而且要装上 XTEST 扩展（Debian/Ubuntu 上是 libxtst6）。\
+         Wayland 会话不给这条路。"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "这个系统还没有能注入输入的办法。"
+    }
 }
 
 /// 造一个这台机器上的注入器。
@@ -216,7 +281,15 @@ pub fn injector() -> Result<Box<dyn Injector>, InputError> {
     {
         Ok(Box::new(macos::MacosInjector::new()?))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Ok(Box::new(windows::WindowsInjector::new()?))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(linux::LinuxInjector::new()?))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Err(InputError::Unsupported)
     }
@@ -224,6 +297,19 @@ pub fn injector() -> Result<Box<dyn Injector>, InputError> {
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+/// Windows 的注入器。
+///
+/// 这一个模块在别的系统上也要编译 —— 里面的键码表是纯逻辑，
+/// 在哪台机器上都能对。
+#[cfg(any(target_os = "windows", test))]
+pub mod windows;
+
+/// Linux 的注入器。
+///
+/// 键码表同样是纯逻辑，在哪台机器上都能对。
+#[cfg(any(target_os = "linux", test))]
+pub mod linux;
 
 #[cfg(test)]
 mod tests {
@@ -264,6 +350,23 @@ mod tests {
     fn a_screen_with_no_scale_factor_is_taken_at_face_value() {
         let (x, _) = global_position(&screen(0.0, 0.0, 0.0), 100, 0);
         assert!((x - 100.0).abs() < 0.001, "{x}");
+    }
+
+    #[test]
+    fn a_point_on_a_screen_that_counts_in_pixels_stays_where_it_is() {
+        // Windows counts in physical pixels: the picture and the place
+        // the screen sits on the desktop are the same unit, so the
+        // scale factor does not come into it.
+        let (x, y) = global_position_in_pixels(&screen(1920.0, 0.0, 2.0), 100, 50);
+        assert!((x - 2020.0).abs() < 0.001, "{x}");
+        assert!((y - 50.0).abs() < 0.001, "{y}");
+    }
+
+    #[test]
+    fn a_point_on_a_screen_that_counts_in_pixels_starts_at_the_origin() {
+        let (x, y) = global_position_in_pixels(&screen(0.0, 0.0, 2.0), 300, 200);
+        assert!((x - 300.0).abs() < 0.001, "{x}");
+        assert!((y - 200.0).abs() < 0.001, "{y}");
     }
 
     #[test]

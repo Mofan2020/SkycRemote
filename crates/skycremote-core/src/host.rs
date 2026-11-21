@@ -68,22 +68,10 @@ pub async fn run(options: HostOptions) -> Result<()> {
     // a missing one is a word of advice now, not a refusal: the screen
     // can still be shared, and the permission can be handed over while
     // the session is running.
-    // The check is here (not in the library) so the link to the
-    // ApplicationServices framework lands in the final binary.
-    #[cfg(target_os = "macos")]
-    let has_permission = {
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrusted() -> bool;
-        }
-        unsafe { AXIsProcessTrusted() }
-    };
-    #[cfg(not(target_os = "macos"))]
-    let has_permission = false;
-    if !has_permission {
+    if !input::can_inject() {
         eprintln!(
-            "skycremote: 这个程序还不能控制键盘和鼠标（macOS 上是「辅助功能」权限）。\
-             画面照常共享，但要操作对面这台机器，得先给这个权限。"
+            "skycremote: 这个程序现在还不能控制键盘和鼠标。{}",
+            input::injection_hint()
         );
     }
 
@@ -176,19 +164,17 @@ async fn serve_once(options: &HostOptions) -> Result<()> {
                 };
                 match message {
                     Message::Input(event) => {
+                        // macOS throws the events away when the
+                        // accessibility permission is missing, and it
+                        // says nothing while doing it.  The other
+                        // systems refuse in their own words, so the
+                        // check is only needed here.
                         #[cfg(target_os = "macos")]
-                        let has_permission = {
-                            #[link(name = "ApplicationServices", kind = "framework")]
-                            extern "C" {
-                                fn AXIsProcessTrusted() -> bool;
+                        {
+                            if !input::can_inject() {
+                                eprintln!("skycremote: 輸入沒有送達 —— 還沒有「輔助功能」權限");
+                                continue;
                             }
-                            unsafe { AXIsProcessTrusted() }
-                        };
-                        #[cfg(not(target_os = "macos"))]
-                        let has_permission = false;
-                        if !has_permission {
-                            eprintln!("skycremote: 輸入沒有送達 —— 還沒有「輔助功能」權限");
-                            continue;
                         }
                         if let Err(error) = injector.inject(&event, &shared) {
                             eprintln!("skycremote: the input was not carried out: {error}");
