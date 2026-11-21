@@ -1,17 +1,26 @@
 [package]
 name = "skycremote-app"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-description = "SkycRemote: the program you run on both ends."
+description = "SkycRemote: the program you open on both ends."
 
+# The program itself: the window.  This is what the macOS bundle and
+# the Windows installer put on the machine.
 [[bin]]
 name = "skycremote"
 path = "src/main.rs"
 
+# The command line tool.  It is the same program seen from a terminal,
+# and it is what goes onto the PATH.
+[[bin]]
+name = "skycremote-cli"
+path = "src/cli.rs"
+
 [dependencies]
 skycremote-core = { path = "../skycremote-core" }
 skycremote-tracker = { path = "../skycremote-tracker" }
+skycremote-installer = { path = "../skycremote-installer" }
 anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
@@ -20,6 +29,7 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 clap = { version = "4", features = ["derive"] }
 wry = "0.57"
 tao = "0.37"

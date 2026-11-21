@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>安装 SkycRemote</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page">
+  <header class="head">
+    <div class="mark" id="mark"></div>
+    <div class="titles">
+      <h1>安装 SkycRemote</h1>
+      <p class="sub" id="version">点对点远程桌面</p>
+    </div>
+  </header>
+
+  <section class="field">
+    <label for="path">安装位置</label>
+    <input id="path" type="text" spellcheck="false" autocomplete="off">
+    <p class="hint">装在你自己的账户下，不需要管理员密码。</p>
+  </section>
+
+  <section class="list">
+    <p class="list-title">装上这些</p>
+    <ul>
+      <li><span class="tick">✓</span>SkycRemote 桌面程序</li>
+      <li><span class="tick">✓</span>命令行工具 skycremote，放进 PATH</li>
+      <li><span class="tick">✓</span>开始菜单和桌面上的快捷方式</li>
+      <li><span class="tick">✓</span>「应用和功能」里的卸载入口</li>
+    </ul>
+  </section>
+
+  <p class="status" id="status" hidden></p>
+
+  <footer class="actions">
+    <button class="btn ghost" id="cancel" type="button">取消</button>
+    <button class="btn primary" id="install" type="button">安装</button>
+  </footer>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var pending = {};
+  var nextId = 1;
+
+  function request(command, payload) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = { resolve: resolve, reject: reject };
+      window.ipc.postMessage(JSON.stringify({
+        id: id,
+        command: command,
+        payload: JSON.stringify(payload || {})
+      }));
+    });
+  }
+
+  window.__skycremote_resolve__ = function (id, ok, result) {
+    var entry = pending[id];
+    if (!entry) return;
+    delete pending[id];
+    if (ok) entry.resolve(result);
+    else entry.reject(new Error((result && result.message) || 'failed'));
+  };
+
+  var pathInput = document.getElementById('path');
+  var status = document.getElementById('status');
+  var installButton = document.getElementById('install');
+  var cancelButton = document.getElementById('cancel');
+
+  function say(text, kind) {
+    status.textContent = text;
+    status.className = 'status ' + (kind || 'info');
+    status.hidden = false;
+  }
+
+  request('defaultPath').then(function (result) {
+    if (result && result.path) pathInput.value = result.path;
+    if (result && result.version) {
+      document.getElementById('version').textContent = '点对点远程桌面 · v' + result.version;
+    }
+  }).catch(function () {});
+
+  installButton.addEventListener('click', function () {
+    var path = (pathInput.value || '').trim();
+    if (!path) {
+      say('请先填一个安装位置', 'error');
+      return;
+    }
+    installButton.disabled = true;
+    installButton.textContent = '安装中…';
+    say('正在安装…', 'info');
+
+    request('install', { path: path }).then(function (result) {
+      if (result && result.ok) {
+        installButton.textContent = '安装完成';
+        cancelButton.textContent = '完成';
+        say('装好了：' + result.path + '。命令行工具叫 skycremote，在终端里直接用。', 'ok');
+      } else {
+        installButton.disabled = false;
+        installButton.textContent = '安装';
+        say((result && result.message) || '安装没有成功', 'error');
+      }
+    }).catch(function (error) {
+      installButton.disabled = false;
+      installButton.textContent = '安装';
+      say(error.message || '安装没有成功', 'error');
+    });
+  });
+
+  cancelButton.addEventListener('click', function () {
+    request('close').catch(function () {});
+  });
+})();
+</script>
+</body>
+</html>

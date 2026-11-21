@@ -52,6 +52,14 @@
 
   var state = {
     view: 'connect',
+    // What the program is doing: control another device, or let
+    // another device control this one.
+    mode: 'control',
+    // Whether this machine is sharing its screen right now.
+    sharing: false,
+    // The settings as the backend gives them, which are not the
+    // ones this file works with.
+    backendSettings: {},
     // The decoder for the pictures.  It is made when the first
     // picture arrives, because a browser that cannot decode H.264
     // should say so once rather than on every picture.
@@ -2442,6 +2450,212 @@
   }
 
   /* ==================================================================
+   * Sharing: letting another machine control this one
+   *
+   * The program does two things, and the page shows both: control
+   * another device, or let another device control this one.  The
+   * second one needs the tracker and a device id, because that is
+   * what the other end types in.
+   * ================================================================== */
+
+  function setMode(mode) {
+    state.mode = mode;
+    var sharing = mode === 'share';
+    $$('#mode-switch [data-mode]').forEach(function (button) {
+      button.classList.toggle('is-active', button.getAttribute('data-mode') === mode);
+    });
+    toggle($('#control-hero'), !sharing);
+    toggle($('#devices-section'), !sharing);
+    toggle($('#share-panel'), sharing);
+    if (sharing) fillShareForm();
+  }
+
+  function fillShareForm() {
+    var id = $('#share-id-input');
+    var name = $('#share-name-input');
+    var tracker = $('#share-tracker-input');
+    var settings = state.backendSettings || {};
+    if (id && !id.value) id.value = settings.device_id || '';
+    if (name && !name.value) name.value = settings.device_name || '';
+    if (tracker && !tracker.value) tracker.value = settings.tracker || '';
+  }
+
+  function shareValue(id) {
+    var node = $(id);
+    return node ? (node.value || '').trim() : '';
+  }
+
+  function startSharing() {
+    var id = shareValue('#share-id-input');
+    if (!id) {
+      toast(t('share.error.empty'), 'warning');
+      return;
+    }
+    if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) {
+      toast(t('share.error.invalid'), 'warning');
+      return;
+    }
+
+    var button = $('#share-btn');
+    if (button) {
+      button.classList.add('is-busy');
+      button.disabled = true;
+    }
+    setShareButtonLabel(t('share.starting'));
+
+    bridge.call('startHost', {
+      deviceId: id,
+      deviceName: shareValue('#share-name-input'),
+      tracker: shareValue('#share-tracker-input')
+    }).then(function () {
+      state.sharing = true;
+      showShareCard(id);
+      setShareButtonStop();
+      setShareStatus('waiting');
+    }).catch(function (error) {
+      if (button) {
+        button.classList.remove('is-busy');
+        button.disabled = false;
+      }
+      setShareButtonLabel(t('share.start'));
+      toast((error && error.message) || t('share.error.failed'), 'error');
+    });
+  }
+
+  function stopSharing() {
+    var button = $('#share-btn');
+    if (button) {
+      button.classList.add('is-busy');
+      button.disabled = true;
+    }
+    setShareButtonLabel(t('share.stopping'));
+
+    bridge.call('stopHost').then(function () {
+      state.sharing = false;
+      if (button) {
+        button.classList.remove('is-busy');
+        button.disabled = false;
+      }
+      setShareButtonLabel(t('share.start'));
+      setShareStatus('stopped');
+    }).catch(function (error) {
+      if (button) {
+        button.classList.remove('is-busy');
+        button.disabled = false;
+      }
+      setShareButtonLabel(t('share.start'));
+      toast((error && error.message) || t('share.error.failed'), 'error');
+    });
+  }
+
+  function setShareButtonLabel(text) {
+    var label = $('#share-btn-label');
+    if (label) label.textContent = text;
+  }
+
+  function setShareButtonStop() {
+    setShareButtonLabel(t('share.stop'));
+    var icon = $('#share-btn .icon');
+    if (icon) {
+      icon.setAttribute('data-icon', 'x');
+      hydrateIcons(icon.parentNode);
+    }
+  }
+
+  function setShareButtonStart() {
+    setShareButtonLabel(t('share.start'));
+    var icon = $('#share-btn .icon');
+    if (icon) {
+      icon.setAttribute('data-icon', 'play');
+      hydrateIcons(icon.parentNode);
+    }
+  }
+
+  function showShareCard(id) {
+    var card = $('#share-card');
+    var value = $('#share-card-id');
+    if (value) value.textContent = id;
+    show(card);
+  }
+
+  function setShareStatus(kind, detail) {
+    var box = $('#share-status');
+    var text = $('#share-status-text');
+    var dot = $('#share-status-dot');
+    if (!box) return;
+
+    var labels = {
+      waiting: t('share.state.waiting'),
+      sharing: t('share.state.sharing'),
+      stopped: t('share.state.stopped'),
+      warning: t('share.state.warning')
+    };
+    if (text) text.textContent = detail ? detail : (labels[kind] || '');
+    if (dot) {
+      dot.className = 'status-dot' + (kind ? ' is-' + kind : '');
+    }
+    show(box);
+  }
+
+  function handleHostEvent(payload) {
+    if (!payload) return;
+    var kind = payload.state;
+    if (kind === 'sharing') {
+      setShareStatus('sharing', t('share.state.sharingDetail', { screen: payload.screen || '' }));
+    } else if (kind === 'warning') {
+      setShareStatus('warning', payload.message || t('share.state.warning'));
+    } else if (kind === 'stopped') {
+      state.sharing = false;
+      setShareStatus('stopped');
+      setShareButtonStart();
+      var button = $('#share-btn');
+      if (button) {
+        button.classList.remove('is-busy');
+        button.disabled = false;
+      }
+    } else {
+      setShareStatus('waiting');
+    }
+  }
+
+  function wireShareView() {
+    var switcher = $('#mode-switch');
+    if (switcher) {
+      switcher.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-mode]');
+        if (!button) return;
+        setMode(button.getAttribute('data-mode'));
+      });
+    }
+
+    var form = $('#share-form');
+    if (form) {
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        if (state.sharing) stopSharing();
+        else startSharing();
+      });
+    }
+
+    var copy = $('#share-copy');
+    if (copy) {
+      copy.addEventListener('click', function () {
+        var id = $('#share-card-id') ? $('#share-card-id').textContent : '';
+        if (!id) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(id).then(function () {
+            toast(t('share.copied'), 'success');
+          }).catch(function () {
+            toast(id, 'info');
+          });
+        } else {
+          toast(id, 'info');
+        }
+      });
+    }
+  }
+
+  /* ==================================================================
    * Init
    * ================================================================== */
 
@@ -2456,6 +2670,7 @@
 
     wireTopbar();
     wireConnectView();
+    wireShareView();
     wireRemoteToolbar();
     wireToolbarAutoShow();
     wireSettingsPanel();
@@ -2486,6 +2701,13 @@
       }
     });
     bridge.on('files', function (p) { renderFiles((p && p.files) || p || []); });
+    bridge.on('host', handleHostEvent);
+    bridge.on('cliInstall', function (p) {
+      // The command line tool is put on the PATH when the program
+      // starts; the person is told where it went.
+      if (p && p.ok && p.message) toast(p.message, 'info');
+      else if (p && p.message) toast(p.message, 'warning');
+    });
     bridge.on('disconnect', function () {
       state.connected = false;
       stopStatusPoll();
@@ -2500,12 +2722,30 @@
     // MOCK: the backend pushes the current settings on start.
     bridge.call('getSettings').then(function (s) {
       if (s && Object.keys(s).length) {
+        state.backendSettings = s;
         Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
           if (Object.prototype.hasOwnProperty.call(s, key)) state.settings[key] = s[key];
         });
         writeSettingsForm();
+        if (state.mode === 'share') fillShareForm();
       }
     });
+
+    // The version the program really is.
+    bridge.call('appInfo').then(function (info) {
+      if (!info || !info.version) return;
+      var footer = $('#footer-version');
+      if (footer) footer.textContent = info.name + ' ' + info.version;
+    }).catch(function () {});
+
+    // The command line tool can open the window and go straight to a
+    // device: "skycremote control --id something".
+    var start = global.__SKYCREMOTE_START__;
+    if (start && start.connectTo) {
+      var input = $('#device-id-input');
+      if (input) input.value = start.connectTo;
+      startConnect(start.connectTo);
+    }
 
     global.skycremote = api;
   }

@@ -353,15 +353,39 @@ pub async fn listen_direct(
     port: u16,
     timeout: std::time::Duration,
 ) -> Result<(Sender, Receiver)> {
+    listen_direct_cancellable(
+        tracker,
+        device_id,
+        device_name,
+        port,
+        timeout,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+/// The same wait, but it can be called off.
+///
+/// The window starts and stops the share while the program runs, so
+/// the wait for the other end has to be interruptible: a person who
+/// closes the share must not wait out the whole timeout.
+pub async fn listen_direct_cancellable(
+    tracker: &str,
+    device_id: &str,
+    device_name: &str,
+    port: u16,
+    timeout: std::time::Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(Sender, Receiver)> {
     let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
         .context("the port could not be opened")?;
     register(tracker, device_id, device_name, port).await?;
-    let hole = crate::hole::punch_wait(socket, std::time::Instant::now() + timeout)
+    let hole = crate::hole::punch_wait_until(socket, std::time::Instant::now() + timeout, cancel)
         .context("the other end did not arrive")?;
 
     let server_config = server_config()?;
     let endpoint = server_endpoint(hole.socket, server_config)?;
-    let connection = accept(&endpoint, timeout).await?;
+    let connection = accept_cancellable(&endpoint, timeout, cancel).await?;
     open(connection, Side::Responder).await
 }
 
@@ -495,15 +519,39 @@ fn server_endpoint(socket: std::net::UdpSocket, config: quinn::ServerConfig) -> 
 /// connection that will never come would wait forever, and the user
 /// would be stuck with a window that does nothing.
 pub async fn accept(endpoint: &Endpoint, timeout: std::time::Duration) -> Result<Connection> {
-    let incoming = tokio::time::timeout(timeout, endpoint.accept())
-        .await
-        .context("nobody came in")?
-        .context("the endpoint is closed")?;
-    incoming
-        .accept()
-        .context("the connection could not be made")?
-        .await
-        .context("the connection could not be made")
+    accept_cancellable(
+        endpoint,
+        timeout,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+/// The same wait, but it can be called off.
+///
+/// The wait for the other end is the longest wait in the program, so
+/// it is the one that has to answer to a stop.
+pub async fn accept_cancellable(
+    endpoint: &Endpoint,
+    timeout: std::time::Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Connection> {
+    let wait = async {
+        let incoming = tokio::time::timeout(timeout, endpoint.accept())
+            .await
+            .context("nobody came in")?
+            .context("the endpoint is closed")?;
+        incoming
+            .accept()
+            .context("the connection could not be made")?
+            .await
+            .context("the connection could not be made")
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(anyhow!("the wait was called off")),
+        result = wait => result,
+    }
 }
 
 /// Open the two channels over a connection.

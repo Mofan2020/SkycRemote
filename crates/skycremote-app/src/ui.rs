@@ -55,6 +55,13 @@ pub struct Options {
     /// backend, screen capture — is checked without a person in front
     /// of it.
     pub probe: bool,
+    /// The device to connect to as soon as the window is open.
+    ///
+    /// It is how the command line tool opens the window and goes
+    /// straight to a device: `skycremote control --id something`.
+    pub connect_to: Option<String>,
+    /// The tracker to use, whatever the settings say.
+    pub tracker: Option<String>,
 }
 
 impl Default for Options {
@@ -64,6 +71,8 @@ impl Default for Options {
             height: 820.0,
             title: "SkycRemote".to_string(),
             probe: false,
+            connect_to: None,
+            tracker: None,
         }
     }
 }
@@ -112,8 +121,24 @@ fn build_page() -> String {
 ///
 /// It runs before the page's own scripts, so the page finds the
 /// backend there and uses it instead of its mock.
-fn bootstrap() -> String {
-    r#"
+fn bootstrap(connect_to: Option<&str>, tracker: Option<&str>) -> String {
+    // What the window was told to do when it opened.  The page reads
+    // it once it is up.
+    let start = serde_json::json!({
+        "connectTo": connect_to,
+        "tracker": tracker,
+    });
+    let mut script = String::from(BOOTSTRAP);
+    script.push_str("\n// What the window was told to do when it opened.\n");
+    script.push_str(&format!("window.__SKYCREMOTE_START__ = {start};\n"));
+    script
+}
+
+/// The script that gives the page its backend.
+///
+/// It runs before the page's own scripts, so the page finds the
+/// backend there and uses it instead of its mock.
+const BOOTSTRAP: &str = r#"
 (function () {
   'use strict';
 
@@ -167,9 +192,7 @@ fn bootstrap() -> String {
     }
   };
 })();
-"#
-    .to_string()
-}
+"#;
 
 /// Open the window and run until it is closed.
 pub fn run(options: Options) -> Result<()> {
@@ -194,7 +217,10 @@ pub fn run(options: Options) -> Result<()> {
     let loaded_flag = Arc::clone(&page_loaded);
 
     let builder = WebViewBuilder::new()
-        .with_initialization_script(bootstrap())
+        .with_initialization_script(bootstrap(
+            options.connect_to.as_deref(),
+            options.tracker.as_deref(),
+        ))
         .with_on_page_load_handler(move |event, _url| {
             if matches!(event, PageLoadEvent::Finished) {
                 loaded_flag.store(true, Ordering::SeqCst);
@@ -215,7 +241,11 @@ pub fn run(options: Options) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new().context("the network could not be started")?;
     std::thread::spawn(move || {
         runtime.block_on(async move {
-            Backend::new(out_tx).run(command_rx).await;
+            // Only the tracker is moved in here; the rest of the
+            // options stay with this thread.
+            Backend::new(out_tx, options.tracker.clone())
+                .run(command_rx)
+                .await;
         });
     });
 

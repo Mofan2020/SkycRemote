@@ -119,13 +119,15 @@ jobs:
         shell: bash
         run: |
           # The window needs a display, and a CI runner has none, so the
-          # smoke test stays on the command line: every subcommand has to
-          # answer `--help` without touching a screen.
-          ./target/release/skycremote --help
-          ./target/release/skycremote tracker --help
-          ./target/release/skycremote host --help
-          ./target/release/skycremote control --help
-          ./target/release/skycremote ui --help
+          # smoke test stays on the command line: every subcommand of the
+          # command line tool has to answer `--help` without touching a
+          # screen.  The window itself is not started here: starting it
+          # would open a window on the runner.
+          ./target/release/skycremote-cli --help
+          ./target/release/skycremote-cli tracker --help
+          ./target/release/skycremote-cli host --help
+          ./target/release/skycremote-cli control --help
+          ./target/release/skycremote-cli ui --help
 
       - name: Smoke test the tracker
         shell: bash
@@ -133,7 +135,7 @@ jobs:
           # The tracker is a plain HTTP service: it registers a device
           # and hands the address back.  It carries no session data, so
           # starting one here and asking it a question is safe.
-          ./target/release/skycremote tracker --port 21115 &
+          ./target/release/skycremote-cli tracker --port 21115 &
           TRACKER_PID=$!
           trap 'kill $TRACKER_PID 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do
@@ -153,32 +155,36 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
+        # Linux has no installer yet: the archive holds the window and
+        # the command line tool, and both are run from where they are
+        # unpacked.
         run: |
           mkdir -p skycremote-linux-x64
           cp target/release/skycremote skycremote-linux-x64/
-          tar czf skycremote-linux-x64.tar.gz -C skycremote-linux-x64 skycremote
+          cp target/release/skycremote-cli skycremote-linux-x64/
+          tar czf skycremote-linux-x64.tar.gz -C skycremote-linux-x64 skycremote skycremote-cli
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: |
-          mkdir -p skycremote-macos-arm64
-          cp target/release/skycremote skycremote-macos-arm64/
-          tar czf skycremote-macos-arm64.tar.gz -C skycremote-macos-arm64 skycremote
+        # The program on macOS is an application bundle in a disk
+        # image: the person drags it into "Applications" and it is
+        # done.  The command line tool goes with it.
+        run: bash scripts/package-macos.sh
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        # The program on Windows is an installer: it is not portable,
+        # it has to be installed.  The installer is written from
+        # scratch, not packed with NSIS.
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force skycremote-windows-x64 | Out-Null
-          Copy-Item target/release/skycremote.exe skycremote-windows-x64/
-          Compress-Archive -Path skycremote-windows-x64/* -DestinationPath skycremote-windows-x64.zip
+        run: pwsh scripts/package-windows.ps1
 
       - uses: actions/upload-artifact@v4
         with:
           name: skycremote-${{ matrix.os }}
           path: |
             skycremote-linux-x64.tar.gz
-            skycremote-macos-arm64.tar.gz
-            skycremote-windows-x64.zip
+            target/dist/*.dmg
+            target/dist/*.exe
           if-no-files-found: error
           retention-days: 14

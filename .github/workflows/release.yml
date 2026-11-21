@@ -82,7 +82,10 @@ jobs:
       - name: Collect the archives
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name 'skycremote-*.tar.gz' -o -name 'skycremote-*.zip' \) \
+          # The disk image for macOS, the installer for Windows, and
+          # the archive for Linux: each platform is handed the shape
+          # it is installed in.
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' -o -name '*.exe' \) \
             -exec cp {} release-assets/ \;
           ls -la release-assets
           test -n "$(ls -A release-assets)" || { echo "no archives collected"; exit 1; }

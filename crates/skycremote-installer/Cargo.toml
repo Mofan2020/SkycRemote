@@ -1,0 +1,40 @@
+[package]
+name = "skycremote-installer"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+description = "Puts SkycRemote on the machine: the program, and the command line tool."
+
+[lib]
+name = "skycremote_installer"
+path = "src/lib.rs"
+
+# The installer itself.  On Windows this is the program the user
+# double-clicks; on the other systems it says so and stops.
+[[bin]]
+name = "skycremote-setup"
+path = "src/main.rs"
+
+[dependencies]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The files that are installed are folded into the installer.
+include_dir = "0.7"
+# The window of the installer is the same kind of window the program
+# itself uses: a web view, so there is one way of drawing a window in
+# this project instead of two.
+tao = "0.37"
+wry = "0.57"
+serde_json.workspace = true
+# The registry, for the PATH and for the entry in "Apps and Features";
+# COM, for the shortcuts; and the message that tells the programs that
+# are already running that the PATH has changed.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }

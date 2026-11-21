@@ -172,20 +172,50 @@ pub struct Backend {
     settings: Settings,
     /// The session, when one is up.
     session: Option<Session>,
+    /// The signal that stops the share, when this machine is sharing.
+    host: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl Backend {
     /// Make a backend that hands its answers to this channel.
-    pub fn new(out: ChannelSender<Out>) -> Self {
+    ///
+    /// The tracker can be given from the outside: the command line
+    /// tool passes the one that was asked for, and it wins over the
+    /// one in the settings.
+    pub fn new(out: ChannelSender<Out>, tracker: Option<String>) -> Self {
+        let mut settings = Settings::load();
+        if let Some(tracker) = tracker {
+            if !tracker.trim().is_empty() {
+                settings.tracker = tracker;
+            }
+        }
         Self {
             out,
-            settings: Settings::load(),
+            settings,
             session: None,
+            host: None,
         }
     }
 
     /// Take the commands as they come.
     pub async fn run(mut self, mut requests: tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
+        // Starting the program puts the command line tool on the PATH.
+        // It is done here, in the background, so that the window is
+        // open before the copy is finished.
+        let out = self.out.clone();
+        tokio::task::spawn_blocking(move || {
+            let report = skycremote_installer::cli::install();
+            emit_to(
+                &out,
+                "cliInstall",
+                json!({
+                    "ok": report.ok,
+                    "message": report.message,
+                    "path": report.path.map(|path| path.to_string_lossy().to_string()),
+                }),
+            );
+        });
+
         while let Some(request) = requests.recv().await {
             let answer = self.dispatch(&request.command, &request.payload).await;
             match answer {
@@ -210,10 +240,17 @@ impl Backend {
         match command {
             "connect" => self.connect(payload).await,
             "disconnect" => self.disconnect(),
+            "startHost" => self.start_host(payload).await,
+            "stopHost" => self.stop_host(),
+            "hostStatus" => Ok(json!({ "sharing": self.host.is_some() })),
             "listScreens" => self.list_screens(),
             "switchScreen" => self.switch_screen(payload).await,
             "sendInput" => self.send_input(payload).await,
             "getSettings" => Ok(json!(self.settings)),
+            "appInfo" => Ok(json!({
+                "name": "SkycRemote",
+                "version": env!("CARGO_PKG_VERSION"),
+            })),
             "saveSettings" => self.save_settings(payload),
             "listDevices" => self.list_devices().await,
             "setQuality" | "setBitrate" | "setFramerate" => self.set_quality(command, payload),
@@ -283,6 +320,91 @@ impl Backend {
             session.sender.close();
         }
         self.emit("disconnect", json!({ "reason": "the user hung up" }));
+        Ok(json!({ "ok": true }))
+    }
+
+    // MARK: - The share
+
+    /// Start sharing the screen of this machine.
+    ///
+    /// The share runs on its own task and tells the window what
+    /// happens through the "host" event, so the window can show it
+    /// without waiting for anything.
+    async fn start_host(&mut self, payload: &Value) -> Result<Value> {
+        if self.host.is_some() {
+            return Err(anyhow!("这台电脑已经在共享了"));
+        }
+
+        let device_id = text_of(payload, "deviceId")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.settings.device_id.clone());
+        if device_id.trim().is_empty() {
+            return Err(anyhow!("还没有给这台电脑起一个设备 ID"));
+        }
+        let device_name = text_of(payload, "deviceName")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.settings.device_name.clone());
+        let tracker = text_of(payload, "tracker")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.settings.tracker.clone());
+
+        // What was asked for is what is remembered.
+        self.settings.device_id = device_id.clone();
+        self.settings.device_name = device_name.clone();
+        self.settings.tracker = tracker.clone();
+        if let Some(value) = payload.get("fps").and_then(|value| value.as_u64()) {
+            self.settings.framerate = value as u32;
+        }
+        if let Some(value) = payload.get("bitrate").and_then(|value| value.as_u64()) {
+            self.settings.bitrate = value as u32;
+        }
+        self.settings.save()?;
+
+        let options = skycremote_core::host::HostOptions {
+            tracker,
+            device_id: device_id.clone(),
+            device_name,
+            port: 21116,
+            fps: self.settings.framerate,
+            bitrate_bps: self.settings.bitrate * 1000,
+        };
+
+        let service = skycremote_core::host::HostService::new(options);
+        let token = service.token();
+
+        let (events_tx, mut events_rx) =
+            tokio::sync::mpsc::unbounded_channel::<skycremote_core::host::HostEvent>();
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                let payload = match event {
+                    skycremote_core::host::HostEvent::Waiting => json!({ "state": "waiting" }),
+                    skycremote_core::host::HostEvent::PeerJoined { peer, screen } => {
+                        json!({ "state": "sharing", "peer": peer, "screen": screen })
+                    }
+                    skycremote_core::host::HostEvent::PeerLeft => json!({ "state": "waiting" }),
+                    skycremote_core::host::HostEvent::Warning { message } => {
+                        json!({ "state": "warning", "message": message })
+                    }
+                };
+                emit_to(&out, "host", payload);
+            }
+        });
+        tokio::spawn(async move {
+            let _ = service.run(events_tx).await;
+        });
+
+        self.host = Some(token);
+        self.emit("host", json!({ "state": "waiting" }));
+        Ok(json!({ "ok": true, "deviceId": device_id }))
+    }
+
+    /// Stop sharing.
+    fn stop_host(&mut self) -> Result<Value> {
+        if let Some(token) = self.host.take() {
+            token.cancel();
+        }
+        self.emit("host", json!({ "state": "stopped" }));
         Ok(json!({ "ok": true }))
     }
 
@@ -496,6 +618,14 @@ impl Backend {
     fn emit(&self, name: &str, payload: Value) {
         emit_to(&self.out, name, payload);
     }
+}
+
+/// Read a string out of the payload, if it is there.
+fn text_of(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
 }
 
 /// Push an event into the window.

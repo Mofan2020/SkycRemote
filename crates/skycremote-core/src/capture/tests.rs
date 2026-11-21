@@ -1,14 +1,44 @@
 //! Tests for the capture module.
 //!
-//! These deliberately avoid requiring a real screen: a headless CI machine
-//! has none, and a test that only passes on a developer's desktop is worse
-//! than no test.  What is checked here is the arithmetic that the rest of
-//! the pipeline depends on, and the promise that a bad request produces an
-//! error instead of a panic.
+//! Most of these deliberately avoid requiring a real screen: a headless CI
+//! machine has none, and a test that only passes on a developer's desktop
+//! is worse than no test.  What is checked here is the arithmetic that the
+//! rest of the pipeline depends on, and the promise that a bad request
+//! produces an error instead of a panic.
+//!
+//! The few tests that do ask for the real screen are **not** part of the
+//! normal run.  On macOS, asking for the screen makes the system ask the
+//! person first: the run puts a dialog on the screen and waits for an
+//! answer.  A test run that interrupts the person it runs on is a test
+//! run that gets skipped, so those tests only run when they are asked
+//! for:
+//!
+//! ```
+//! SKYCREMOTE_CAPTURE_TESTS=1 cargo test -p skycremote-core
+//! ```
+//!
+//! Nothing is recorded and no picture is kept: those tests look at the
+//! size of a frame and throw it away.
 
 use std::time::{Duration, Instant};
 
 use super::*;
+
+/// Whether the tests that ask for the real screen may run.
+///
+/// The name of the switch says what it does.  It is off unless somebody
+/// sets it, because the default run has to leave the person in front of
+/// the machine alone.
+fn the_real_screen_may_be_asked_for() -> bool {
+    std::env::var_os("SKYCREMOTE_CAPTURE_TESTS").is_some()
+}
+
+/// Say that a test was left out, so that it is not a silent hole.
+fn skipped_because_the_screen_is_asked_for() {
+    eprintln!(
+        "skipped: this test asks the system for the screen (set SKYCREMOTE_CAPTURE_TESTS=1 to run it)"
+    );
+}
 
 #[test]
 fn the_pacer_keeps_frames_at_the_target_rate() {
@@ -87,6 +117,10 @@ fn a_rate_of_zero_keeps_every_frame() {
 fn asking_for_a_screen_that_does_not_exist_is_an_error_not_a_panic() {
     // A peer can send any index it likes.  Whatever the machine has, an
     // out-of-range request has to come back as an error.
+    if !the_real_screen_may_be_asked_for() {
+        skipped_because_the_screen_is_asked_for();
+        return;
+    }
     let result = capture_frame(usize::MAX);
 
     match result {
@@ -105,6 +139,10 @@ fn listing_screens_never_panics() {
     // The point of this test is not that screens exist, but that both
     // answers are returned as a `Result`.  A headless machine, a locked
     // session and a Wayland box without a portal are all normal.
+    if !the_real_screen_may_be_asked_for() {
+        skipped_because_the_screen_is_asked_for();
+        return;
+    }
     match list_screens() {
         Ok(screens) => {
             for (position, screen) in screens.iter().enumerate() {
@@ -131,6 +169,10 @@ fn a_captured_frame_matches_the_size_the_screen_promised() {
     // the size the frame actually has.  On a Retina Mac this is where a
     // points/pixels mix-up would show up as a frame twice as wide as the
     // screen claimed.
+    if !the_real_screen_may_be_asked_for() {
+        skipped_because_the_screen_is_asked_for();
+        return;
+    }
     let Ok(screens) = list_screens() else {
         // Nothing to check on a machine with no screens.
         return;

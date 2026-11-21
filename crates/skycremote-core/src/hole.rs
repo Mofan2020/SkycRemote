@@ -21,6 +21,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 /// How long the tracker waits before it answers a "what is my address"
 /// question.
@@ -74,6 +75,9 @@ pub enum HoleError {
     /// The hole could not be punched.
     #[error("the direct connection could not be made: both ends are behind a NAT that cannot be punched through")]
     CannotPunch,
+    /// The wait was called off before the other end came.
+    #[error("the wait was called off")]
+    CalledOff,
 }
 
 /// The result of a successful punch.
@@ -183,9 +187,25 @@ pub fn punch(socket: std::net::UdpSocket, peer: SocketAddr) -> Result<Hole, Hole
 /// back.  Both sides punch at the same time, so the order does not
 /// matter.
 pub fn punch_wait(socket: std::net::UdpSocket, deadline: Instant) -> Result<Hole, HoleError> {
+    punch_wait_until(socket, deadline, &CancellationToken::new())
+}
+
+/// The same wait, but it can be called off.
+///
+/// The wait reads from a socket with a timeout, so the check happens
+/// once every timeout: the stop is not instant, but it is close enough
+/// for a person to notice nothing.
+pub fn punch_wait_until(
+    socket: std::net::UdpSocket,
+    deadline: Instant,
+    cancel: &CancellationToken,
+) -> Result<Hole, HoleError> {
     socket.set_read_timeout(Some(PUNCH_INTERVAL)).ok();
     let mut buffer = [0u8; 64];
     while Instant::now() < deadline {
+        if cancel.is_cancelled() {
+            return Err(HoleError::CalledOff);
+        }
         match socket.recv_from(&mut buffer) {
             Ok((read, from)) => {
                 if read >= PUNCH_MARKER.len() && &buffer[..PUNCH_MARKER.len()] == PUNCH_MARKER {

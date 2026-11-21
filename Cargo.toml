@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/skycremote-core", "crates/skycremote-tracker", "crates/skycremote-app"]
+members = [
+    "crates/skycremote-core",
+    "crates/skycremote-tracker",
+    "crates/skycremote-app",
+    "crates/skycremote-installer",
+]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -12,7 +17,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bytes = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+# "rt" brings the cancellation token, which is how a share that is
+# running in the window can be stopped.
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
 rand = "0.10"
 base64 = "0.23"
 sha2 = "0.11"
