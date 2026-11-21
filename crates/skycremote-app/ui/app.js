@@ -76,7 +76,22 @@
     themePref: 'dark',
     resolvedTheme: 'dark',
     // Who is waiting for a code in the dialog right now.
-    accessResolver: null
+    accessResolver: null,
+    // The file panel: where we are and what is there.
+    files: {
+      path: '',
+      token: null,
+      entries: [],
+      loading: false
+    },
+    // One entry per transfer, keyed by the token the backend gave.
+    transfers: {},
+    // Whether the privacy screen is on.
+    privacy: false,
+    // The last clipboard text that came from the other side.
+    clipboard: '',
+    // The power action waiting to be confirmed.
+    powerAction: null
   };
 
   function clone(obj) {
@@ -251,6 +266,9 @@
     if (e.key !== 'Escape') return;
     if (openMenu) { closeMenus(); return; }
     if (!$('#access-modal').hidden) { closeAccessDialog(null); return; }
+    if (!$('#power-dialog').hidden) { closePowerDialog(); return; }
+    if (!$('#clipboard-panel').hidden) { closeClipboard(); return; }
+    if (!$('#files-panel').hidden) { closeFiles(); return; }
     closeDrawer();
   });
 
@@ -414,6 +432,26 @@
     if (verifyRow) verifyRow.hidden = !state.hostVerifyCode;
     setText($('#my-verify-value'), state.hostVerifyCode || '—');
 
+    // The privacy screen of this computer: it is only there while the
+    // screen is being shared, because there is nothing to hide before
+    // that.
+    var privacyRow = $('#my-privacy-row');
+    if (privacyRow) privacyRow.hidden = !state.sharing;
+    setText($('#my-privacy-value'), state.hostPrivacy
+      ? t('home.myDevice.privacyOn')
+      : t('home.myDevice.privacyOff'));
+    var privacyLabel = $('#my-privacy-toggle-label');
+    if (privacyLabel) {
+      privacyLabel.textContent = state.hostPrivacy
+        ? t('home.myDevice.privacyOff')
+        : t('home.myDevice.privacyOn');
+    }
+    var privacyButton = $('#my-privacy-toggle');
+    if (privacyButton) {
+      privacyButton.setAttribute('aria-pressed', state.hostPrivacy ? 'true' : 'false');
+      privacyButton.classList.toggle('is-on', !!state.hostPrivacy);
+    }
+
     var card = $('#my-device-card');
     if (card) card.classList.toggle('is-sharing', !!state.sharing);
 
@@ -431,6 +469,22 @@
     }
 
     setText($('#share-note'), state.sharing ? t('home.myDevice.shareHint') : '');
+  }
+
+  /**
+   * Turn the privacy screen of this computer on or off.
+   *
+   * While it is on, the picture of this computer is not sent at all,
+   * so that somebody standing behind the machine sees nothing.
+   */
+  function toggleHostPrivacy() {
+    var next = !state.hostPrivacy;
+    bridge.call('toggleHostPrivacy', { enabled: next }).then(function () {
+      state.hostPrivacy = next;
+      renderMyDevice();
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
   }
 
   function toggleShare() {
@@ -725,6 +779,10 @@
     bridge.mock.stopFrames();
     show($('#stage-placeholder'));
     renderVerify();
+    hideReconnect();
+    hide($('#privacy-veil'));
+    hide($('#clipboard-panel'));
+    hide($('#files-panel'));
 
     var list = $('#list-main');
     if (list) list.scrollTop = 0;
@@ -880,6 +938,585 @@
   /** The parts of the program that the backend does not have yet. */
   function notReady() {
     toast(t('remote.notReady') + ' — ' + t('remote.notReadyHint'), 'warning');
+  }
+
+  /* ==================================================================
+   * Files
+   *
+   * The backend answers a listing with a token and sends the entries
+   * back as an event, so that a slow folder does not hold up the
+   * answer.  The same is true of a download: the token names the
+   * transfer and the progress comes in as events.
+   * ================================================================== */
+
+  // The biggest piece we send at once.  The backend expects no more
+  // than this in one chunk.
+  var UPLOAD_CHUNK = 512 * 1024;
+
+  function pathParent(path) {
+    var text = path || '';
+    var cut = text.lastIndexOf('/');
+    if (cut < 0) return '';
+    return text.slice(0, cut);
+  }
+
+  function pathChild(path, name) {
+    var text = path || '';
+    return text ? text + '/' + name : name;
+  }
+
+  function openFiles() {
+    show($('#files-panel'));
+    if (!state.files.entries.length && !state.files.loading) listFiles(state.files.path);
+  }
+
+  function closeFiles() {
+    hide($('#files-panel'));
+  }
+
+  function listFiles(path) {
+    var target = path || '';
+    state.files.path = target;
+    state.files.loading = true;
+    renderFiles();
+
+    return bridge.call('listFiles', { path: target }).then(function (reply) {
+      state.files.token = reply && typeof reply.token === 'number' ? reply.token : null;
+      if (state.files.token === null) state.files.loading = false;
+      renderFiles();
+      return reply;
+    }).catch(function (error) {
+      state.files.loading = false;
+      state.files.token = null;
+      state.files.entries = [];
+      renderFiles();
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function handleFilesEvent(payload) {
+    if (!payload) return;
+    // A listing for a request we already gave up on is not ours.
+    if (state.files.token !== null && payload.token !== undefined &&
+        payload.token !== state.files.token) return;
+
+    state.files.token = null;
+    state.files.path = payload.path || '';
+    state.files.entries = (payload.entries || []).map(function (entry) {
+      return bridge.normaliseFileEntry(entry);
+    }).filter(Boolean);
+    state.files.loading = false;
+    renderFiles();
+  }
+
+  function renderFiles() {
+    var pathHost = $('#files-path');
+    if (pathHost) {
+      pathHost.innerHTML = '';
+
+      var home = el('button', 'files-crumb', t('files.home'));
+      home.type = 'button';
+      home.addEventListener('click', function () { listFiles(''); });
+      pathHost.appendChild(home);
+
+      var parts = (state.files.path || '').split('/').filter(function (part) { return part; });
+      var walked = '';
+      parts.forEach(function (part) {
+        walked = walked ? walked + '/' + part : part;
+        var target = walked;
+        pathHost.appendChild(el('span', 'files-crumb-sep', '/'));
+        var crumb = el('button', 'files-crumb', part);
+        crumb.type = 'button';
+        crumb.addEventListener('click', function () { listFiles(target); });
+        pathHost.appendChild(crumb);
+      });
+
+      var up = el('button', 'files-crumb files-crumb-up');
+      up.type = 'button';
+      up.setAttribute('title', t('files.parent'));
+      up.innerHTML = icons.icon('arrow-up', { size: 14 });
+      up.addEventListener('click', function () { listFiles(pathParent(state.files.path)); });
+      pathHost.appendChild(up);
+    }
+
+    var input = $('#files-path-input');
+    if (input && document.activeElement !== input) input.value = state.files.path || '';
+
+    var list = $('#files-list');
+    if (list) {
+      list.innerHTML = '';
+      state.files.entries.forEach(function (entry) {
+        list.appendChild(fileRow(entry));
+      });
+    }
+
+    var empty = $('#files-empty');
+    if (empty) {
+      empty.hidden = state.files.entries.length > 0;
+      empty.textContent = state.files.loading ? t('files.loading') : t('files.empty');
+    }
+
+    var status = $('#files-status');
+    if (status) status.textContent = state.files.loading ? t('files.loading') : '';
+  }
+
+  function fileRow(entry) {
+    var row = el('div', 'file-row');
+    var isDir = !!entry.isDir;
+
+    var iconNode = el('span', 'icon file-icon');
+    iconNode.innerHTML = icons.icon(isDir ? 'folder' : 'file', { size: 16 });
+    row.appendChild(iconNode);
+
+    row.appendChild(el('span', 'file-name', entry.name || ''));
+    row.appendChild(el('span', 'file-size mono', isDir ? '' : formatSize(entry.size)));
+
+    if (isDir) {
+      row.classList.add('is-dir');
+      row.addEventListener('click', function () {
+        listFiles(pathChild(state.files.path, entry.name));
+      });
+    } else {
+      var download = el('button', 'btn btn-ghost btn-sm file-download');
+      download.type = 'button';
+      download.innerHTML = icons.icon('download', { size: 15 }) + '<span>' + t('files.download') + '</span>';
+      download.addEventListener('click', function () { startDownload(entry); });
+      row.appendChild(download);
+    }
+
+    return row;
+  }
+
+  function formatSize(bytes) {
+    var size = Number(bytes) || 0;
+    if (size < 1024) return size + ' B';
+    var units = ['KB', 'MB', 'GB', 'TB'];
+    var value = size / 1024;
+    var index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value = value / 1024;
+      index += 1;
+    }
+    return (value >= 10 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index];
+  }
+
+  /* ------------------------------------------------------------------
+   * Uploading
+   * ---------------------------------------------------------------- */
+
+  function startUpload(file) {
+    bridge.call('uploadStart', { name: file.name, size: file.size }).then(function (reply) {
+      var token = reply && reply.token;
+      if (typeof token !== 'number') {
+        toast(t('files.failed'), 'error');
+        return null;
+      }
+      state.transfers[token] = {
+        token: token,
+        kind: 'upload',
+        name: file.name,
+        size: file.size,
+        done: 0,
+        finished: false,
+        failed: false,
+        message: ''
+      };
+      renderTransfers();
+      return uploadChunks(file, token);
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function uploadChunks(file, token) {
+    var offset = 0;
+
+    function step() {
+      if (offset >= file.size) {
+        return bridge.call('uploadEnd', { token: token }).then(function () {
+          var transfer = state.transfers[token];
+          if (transfer) {
+            transfer.finished = true;
+            transfer.done = transfer.size;
+          }
+          renderTransfers();
+          toast(t('toast.filesUploaded', { name: file.name }), 'success');
+        });
+      }
+
+      var end = Math.min(offset + UPLOAD_CHUNK, file.size);
+      var slice = file.slice(offset, end);
+
+      return readAsBase64(slice).then(function (data) {
+        return bridge.call('uploadChunk', { token: token, offset: offset, data: data }).then(function () {
+          offset = end;
+          var transfer = state.transfers[token];
+          if (transfer) transfer.done = offset;
+          renderTransfers();
+          return step();
+        });
+      });
+    }
+
+    return step().catch(function (error) {
+      var transfer = state.transfers[token];
+      if (transfer) transfer.failed = true;
+      renderTransfers();
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  /**
+   * Read a piece of a file as base64.
+   *
+   * The bytes are read with a FileReader, which does the base64 for
+   * us on the raw bytes; that keeps a piece of a binary file intact,
+   * which btoa on a string would not.
+   */
+  function readAsBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error(t('files.readFailed'))); };
+      reader.onload = function () {
+        var result = String(reader.result || '');
+        var cut = result.indexOf(',');
+        resolve(cut === -1 ? result : result.slice(cut + 1));
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  /* ------------------------------------------------------------------
+   * Downloading
+   * ---------------------------------------------------------------- */
+
+  function startDownload(entry) {
+    var path = pathChild(state.files.path, entry.name);
+
+    bridge.call('downloadFile', { path: path }).then(function (reply) {
+      var token = reply && reply.token;
+      if (typeof token !== 'number') {
+        toast(t('files.failed'), 'error');
+        return;
+      }
+      state.transfers[token] = {
+        token: token,
+        kind: 'download',
+        name: entry.name,
+        size: entry.size || 0,
+        done: 0,
+        finished: false,
+        failed: false,
+        message: '',
+        path: ''
+      };
+      renderTransfers();
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function handleFileProgressEvent(payload) {
+    if (!payload) return;
+    var transfer = state.transfers[payload.token];
+    if (!transfer) return;
+    transfer.done = payload.received || 0;
+    if (payload.size) transfer.size = payload.size;
+    renderTransfers();
+  }
+
+  function handleFileDoneEvent(payload) {
+    if (!payload) return;
+    var transfer = state.transfers[payload.token];
+    if (transfer) {
+      transfer.finished = true;
+      transfer.done = payload.size || transfer.size;
+      transfer.path = payload.path || '';
+      renderTransfers();
+    }
+    toast(t('toast.fileDownloaded', { name: payload.name || '' }), 'success');
+  }
+
+  function handleFileErrorEvent(payload) {
+    if (!payload) return;
+    var transfer = state.transfers[payload.token];
+    if (transfer) {
+      transfer.failed = true;
+      transfer.message = payload.message || '';
+    }
+    renderTransfers();
+    toast(payload.message || t('toast.fileFailed'), 'error');
+  }
+
+  function handleUploadProgressEvent(payload) {
+    if (!payload) return;
+    var transfer = state.transfers[payload.token];
+    if (!transfer) return;
+    transfer.done = payload.sent || 0;
+    if (payload.size) transfer.size = payload.size;
+    renderTransfers();
+  }
+
+  function handleUploadDoneEvent(payload) {
+    if (!payload) return;
+    var transfer = state.transfers[payload.token];
+    if (!transfer) return;
+    transfer.finished = true;
+    transfer.done = transfer.size;
+    renderTransfers();
+  }
+
+  function cancelTransfer(token) {
+    bridge.call('cancelTransfer', { token: token }).then(function () {
+      delete state.transfers[token];
+      renderTransfers();
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function renderTransfers() {
+    var host = $('#files-transfers');
+    if (!host) return;
+    host.innerHTML = '';
+
+    Object.keys(state.transfers).forEach(function (key) {
+      var transfer = state.transfers[key];
+      var row = el('div', 'transfer-row');
+
+      var line = el('div', 'transfer-line');
+      line.appendChild(el('span', 'transfer-name', transfer.name || ''));
+
+      var percent = transfer.size ? Math.floor((transfer.done / transfer.size) * 100) : 0;
+      if (transfer.finished) percent = 100;
+      line.appendChild(el('span', 'transfer-percent', percent + '%'));
+      row.appendChild(line);
+
+      var bar = el('div', 'progress');
+      var fill = el('div', 'progress-fill');
+      if (transfer.failed) fill.classList.add('is-bad');
+      if (transfer.finished) fill.classList.add('is-done');
+      fill.style.width = clamp(percent, 0, 100) + '%';
+      bar.appendChild(fill);
+      row.appendChild(bar);
+
+      var note = el('div', 'transfer-note');
+      if (transfer.failed) {
+        note.textContent = transfer.message || t('files.failed');
+      } else if (transfer.finished) {
+        note.textContent = transfer.path || t('files.done');
+      } else {
+        note.textContent = transfer.kind === 'upload' ? t('files.uploading') : t('files.downloading');
+      }
+      row.appendChild(note);
+
+      if (!transfer.finished && !transfer.failed) {
+        var cancel = el('button', 'icon-btn icon-btn-xs transfer-cancel');
+        cancel.type = 'button';
+        cancel.setAttribute('title', t('files.cancel'));
+        cancel.innerHTML = icons.icon('x', { size: 14 });
+        cancel.addEventListener('click', function () { cancelTransfer(transfer.token); });
+        row.appendChild(cancel);
+      }
+
+      host.appendChild(row);
+    });
+  }
+
+  /* ==================================================================
+   * The clipboard
+   * ================================================================== */
+
+  function openClipboard() {
+    show($('#clipboard-panel'));
+    renderClipboard();
+  }
+
+  function closeClipboard() {
+    hide($('#clipboard-panel'));
+  }
+
+  function handleClipboardEvent(payload) {
+    if (!payload) return;
+    state.clipboard = typeof payload.text === 'string' ? payload.text : '';
+    renderClipboard();
+  }
+
+  function renderClipboard() {
+    var field = $('#clipboard-text');
+    if (field && document.activeElement !== field) field.value = state.clipboard || '';
+
+    var hint = $('#clipboard-hint');
+    if (hint) {
+      hint.textContent = state.clipboard ? t('clipboard.hint') : t('clipboard.empty');
+    }
+  }
+
+  /**
+   * Send what is in the box to the other side.
+   *
+   * There is no command for reading this computer's own clipboard, so
+   * the text is taken from the box: the person pastes it there.
+   */
+  function sendClipboard() {
+    var field = $('#clipboard-text');
+    var text = field ? (field.value || '') : '';
+    if (!text.trim()) {
+      toast(t('toast.clipboardEmpty'), 'warning');
+      return;
+    }
+
+    bridge.call('sendClipboard', { text: text }).then(function () {
+      toast(t('toast.clipboardSent'), 'success');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  /* ==================================================================
+   * The privacy screen
+   * ================================================================== */
+
+  function togglePrivacy() {
+    var next = !state.privacy;
+
+    bridge.call('togglePrivacyScreen', { enabled: next }).then(function (reply) {
+      var enabled = reply && typeof reply.enabled === 'boolean' ? reply.enabled : next;
+      setPrivacy(enabled);
+      toast(enabled ? t('toast.privacyOn') : t('toast.privacyOff'), 'info');
+    }).catch(function (error) {
+      renderPrivacy();
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function handlePrivacyEvent(payload) {
+    if (!payload) return;
+    setPrivacy(!!payload.enabled);
+  }
+
+  function setPrivacy(enabled) {
+    state.privacy = !!enabled;
+    renderPrivacy();
+  }
+
+  function renderPrivacy() {
+    var veil = $('#privacy-veil');
+    if (veil) veil.hidden = !state.privacy;
+
+    var button = $('#btn-privacy');
+    if (!button) return;
+
+    button.classList.toggle('is-on', state.privacy);
+    button.setAttribute('aria-checked', state.privacy ? 'true' : 'false');
+
+    var label = button.querySelector('.tb-label');
+    if (label) {
+      label.textContent = state.privacy ? t('privacy.labelOn') : t('remote.toolbar.privacy');
+    }
+
+    var iconNode = button.querySelector('.icon');
+    if (iconNode) {
+      iconNode.setAttribute('data-icon', state.privacy ? 'eye' : 'eye-off');
+      hydrateIcons(button);
+    }
+  }
+
+  /* ==================================================================
+   * Power
+   * ================================================================== */
+
+  // The name of the action, for the menu.
+  function powerLabel(action) {
+    if (action === 'shutdown') return t('power.shutdown');
+    if (action === 'restart') return t('power.restart');
+    if (action === 'sleep') return t('power.sleep');
+    return t('power.logoff');
+  }
+
+  // The action as a verb, for the sentence in the question.
+  function powerWord(action) {
+    if (action === 'shutdown') return t('power.word.shutdown');
+    if (action === 'restart') return t('power.word.restart');
+    if (action === 'sleep') return t('power.word.sleep');
+    return t('power.word.logoff');
+  }
+
+  function requestPower(action) {
+    closeMenus();
+    state.powerAction = action;
+    setText($('#power-title'), t('power.confirmTitle', { action: powerWord(action) }));
+    setText($('#power-body'), t('power.confirmBody', { action: powerWord(action) }));
+    show($('#power-dialog'));
+  }
+
+  function closePowerDialog() {
+    hide($('#power-dialog'));
+    state.powerAction = null;
+  }
+
+  function confirmPower() {
+    var action = state.powerAction;
+    closePowerDialog();
+    if (!action) return;
+
+    bridge.call('powerAction', { action: action }).then(function () {
+      toast(t('toast.powerSent', { action: powerLabel(action) }), 'success');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  /* ==================================================================
+   * Reconnecting
+   * ================================================================== */
+
+  var reconnectTimer = null;
+
+  function showReconnect(attempt) {
+    var banner = $('#reconnect-banner');
+    if (!banner) return;
+
+    setText($('#reconnect-text'), t('reconnect.banner', { n: attempt }));
+    banner.classList.remove('is-good');
+    banner.classList.add('is-warn');
+    banner.hidden = false;
+
+    var iconNode = banner.querySelector('.icon');
+    if (iconNode) {
+      iconNode.setAttribute('data-icon', 'refresh');
+      hydrateIcons(banner);
+    }
+  }
+
+  function showReconnected() {
+    var banner = $('#reconnect-banner');
+    if (!banner) return;
+
+    setText($('#reconnect-text'), t('reconnect.done'));
+    banner.classList.remove('is-warn');
+    banner.classList.add('is-good');
+    banner.hidden = false;
+
+    var iconNode = banner.querySelector('.icon');
+    if (iconNode) {
+      iconNode.setAttribute('data-icon', 'check-circle');
+      hydrateIcons(banner);
+    }
+
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(function () {
+      hideReconnect();
+    }, 2500);
+  }
+
+  function hideReconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    var banner = $('#reconnect-banner');
+    if (banner) banner.hidden = true;
   }
 
   /* ==================================================================
@@ -1068,6 +1705,15 @@
       renderVerify();
     }
 
+    if (status === 'reconnecting') {
+      // The picture stays where it is; only the banner says what happened.
+      showReconnect(payload.attempt || 1);
+    } else if (status === 'reconnected') {
+      state.connected = true;
+      setConnectionStatus('connected');
+      showReconnected();
+    }
+
     if (status === 'closed') {
       state.connected = false;
       leaveRemoteView();
@@ -1084,6 +1730,7 @@
     state.sharing = (hostState === 'waiting' || hostState === 'sharing');
 
     if (payload.verifyCode) state.hostVerifyCode = payload.verifyCode;
+    if (typeof payload.privacy === 'boolean') state.hostPrivacy = payload.privacy;
     if (hostState === 'stopped') state.hostVerifyCode = '';
 
     renderMyDevice();
@@ -1141,6 +1788,30 @@
         state.screens = normaliseScreens((payload && payload.screens) || payload || []);
         renderScreenMenu();
         break;
+      case 'files':
+        handleFilesEvent(payload);
+        break;
+      case 'fileProgress':
+        handleFileProgressEvent(payload);
+        break;
+      case 'fileDone':
+        handleFileDoneEvent(payload);
+        break;
+      case 'fileError':
+        handleFileErrorEvent(payload);
+        break;
+      case 'uploadProgress':
+        handleUploadProgressEvent(payload);
+        break;
+      case 'uploadDone':
+        handleUploadDoneEvent(payload);
+        break;
+      case 'clipboard':
+        handleClipboardEvent(payload);
+        break;
+      case 'privacy':
+        handlePrivacyEvent(payload);
+        break;
       case 'toast':
         if (payload && payload.message) toast(payload.message, payload.kind || 'info');
         break;
@@ -1184,6 +1855,9 @@
           renderDevices();
           renderSavedCodes();
           renderVerify();
+          renderPrivacy();
+          renderFiles();
+          renderClipboard();
           paintStatus();
           closeMenus();
         });
@@ -1217,6 +1891,7 @@
 
   function wireMyDevice() {
     bind($('#share-toggle'), 'click', toggleShare);
+    bind($('#my-privacy-toggle'), 'click', toggleHostPrivacy);
     bind($('#my-copy-id'), 'click', function () {
       copyText(state.settings.deviceId);
     });
@@ -1290,20 +1965,85 @@
       });
     }
 
+    bind($('#btn-file'), 'click', function () {
+      closeMenus();
+      openFiles();
+    });
+
+    bind($('#btn-clipboard'), 'click', function () {
+      closeMenus();
+      openClipboard();
+    });
+
+    bind($('#btn-privacy'), 'click', function () {
+      closeMenus();
+      togglePrivacy();
+    });
+
+    var powerBtn = $('#btn-power');
+    var powerMenu = $('#power-menu');
+    if (powerBtn && powerMenu) {
+      powerBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (openMenu && openMenu.menu === powerMenu) closeMenus();
+        else showMenu(powerMenu, powerBtn);
+      });
+      $$('[data-power]', powerMenu).forEach(function (item) {
+        item.addEventListener('click', function () {
+          requestPower(item.getAttribute('data-power'));
+        });
+      });
+    }
+
     // These parts are not in the backend yet.  They stay in the menu
     // so the shape of the program is visible, and they say so.
     var notReadyHandler = function () {
       closeMenus();
       notReady();
     };
-    bind($('#btn-file'), 'click', notReadyHandler);
     bind($('#btn-terminal'), 'click', notReadyHandler);
     bind($('#btn-cloud-keyboard'), 'click', notReadyHandler);
     bind($('#btn-gamepad'), 'click', notReadyHandler);
     bind($('#btn-mapping'), 'click', notReadyHandler);
-    bind($('#btn-privacy'), 'click', notReadyHandler);
     bind($('#btn-virtual-screen'), 'click', notReadyHandler);
-    bind($('#btn-power'), 'click', notReadyHandler);
+  }
+
+  function wireFilesPanel() {
+    bind($('#files-close'), 'click', closeFiles);
+
+    bind($('#files-go'), 'click', function () {
+      var input = $('#files-path-input');
+      listFiles(input ? (input.value || '').trim() : '');
+    });
+
+    bind($('#files-upload-btn'), 'click', function () {
+      var input = $('#files-upload-input');
+      if (input) input.click();
+    });
+
+    bind($('#files-upload-input'), 'change', function (event) {
+      var picked = event.target.files;
+      if (picked && picked.length) {
+        Array.prototype.slice.call(picked).forEach(startUpload);
+      }
+      event.target.value = '';
+    });
+
+    bind($('#files-path-input'), 'keydown', function (event) {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      listFiles((event.target.value || '').trim());
+    });
+  }
+
+  function wireClipboard() {
+    bind($('#clipboard-close'), 'click', closeClipboard);
+    bind($('#clipboard-send'), 'click', sendClipboard);
+  }
+
+  function wirePowerDialog() {
+    bind($('#power-cancel'), 'click', closePowerDialog);
+    bind($('#power-confirm'), 'click', confirmPower);
   }
 
   function wireSettingsPanel() {
@@ -1354,6 +2094,9 @@
     wireRemoteToolbar();
     wireSettingsPanel();
     wireLogPanel();
+    wireFilesPanel();
+    wireClipboard();
+    wirePowerDialog();
     wireRemoteInput();
 
     // The backend says in its own words that a part of the program is
@@ -1395,10 +2138,22 @@
       state.logs.push(entry);
       renderLogs();
     });
+    bridge.on('files', handleFilesEvent);
+    bridge.on('fileProgress', handleFileProgressEvent);
+    bridge.on('fileDone', handleFileDoneEvent);
+    bridge.on('fileError', handleFileErrorEvent);
+    bridge.on('uploadProgress', handleUploadProgressEvent);
+    bridge.on('uploadDone', handleUploadDoneEvent);
+    bridge.on('clipboard', handleClipboardEvent);
+    bridge.on('privacy', handlePrivacyEvent);
 
     renderMyDevice();
     renderDevices();
     renderVerify();
+    renderPrivacy();
+    renderFiles();
+    renderTransfers();
+    renderClipboard();
     paintStatus();
     loadDevices();
 

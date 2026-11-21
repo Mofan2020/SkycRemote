@@ -48,6 +48,10 @@
       'home.myDevice.accessCodeHint': '对方连进来的时候要输入这个口令',
       'home.myDevice.verifyCode': '安全码',
       'home.myDevice.verifyCodeHint': '让对方核对，两边数字一样才安全',
+      'home.myDevice.privacy': '隐私屏',
+      'home.myDevice.privacyOn': '把画面停掉',
+      'home.myDevice.privacyOff': '画面已经停掉',
+      'home.myDevice.privacyHint': '开着的时候画面不再发出去，旁边有人也看不到',
       'home.share.waiting': '等待连接',
       'home.share.sharing': '正在共享',
       'home.share.warning': '共享出了点问题',
@@ -94,6 +98,7 @@
       'remote.toolbar.disconnect': '断开',
       'remote.toolbar.more': '更多',
       'remote.toolbar.files': '文件传输',
+      'remote.toolbar.clipboard': '剪贴板',
       'remote.toolbar.terminal': '终端',
       'remote.toolbar.cloudKeyboard': '云键盘',
       'remote.toolbar.gamepad': '手柄',
@@ -105,6 +110,52 @@
       'remote.verify.hint': '和对方屏幕上显示的数字一致，说明中间没人',
       'remote.notReady': '这个还没接上',
       'remote.notReadyHint': '后端还没有这个功能，做不了',
+
+      /* ---------- 文件传输 ---------- */
+      'files.title': '文件传输',
+      'files.upload': '上传文件',
+      'files.go': '前往',
+      'files.pathPlaceholder': '主目录下的路径，留空就是主目录',
+      'files.home': '主目录',
+      'files.parent': '上一级',
+      'files.empty': '这个目录里没有东西',
+      'files.loading': '正在读取',
+      'files.download': '下载',
+      'files.uploading': '正在上传',
+      'files.downloading': '正在下载',
+      'files.done': '完成',
+      'files.failed': '传输失败',
+      'files.cancel': '取消',
+      'files.readFailed': '读不了这个文件',
+
+      /* ---------- 剪贴板 ---------- */
+      'clipboard.title': '剪贴板',
+      'clipboard.placeholder': '对面剪贴板里的文字会出现在这里',
+      'clipboard.hint': '剪贴板内容会跟着两端同步。',
+      'clipboard.empty': '还没有收到对面的剪贴板。',
+      'clipboard.send': '发送本机剪贴板',
+
+      /* ---------- 隐私屏 ---------- */
+      'privacy.on': '隐私屏已开启，画面已暂停',
+      'privacy.labelOn': '隐私屏 · 已开',
+
+      /* ---------- 电源 ---------- */
+      'power.shutdown': '关机',
+      'power.restart': '重启',
+      'power.sleep': '睡眠',
+      'power.logoff': '注销',
+      'power.word.shutdown': '关机',
+      'power.word.restart': '重启',
+      'power.word.sleep': '睡眠',
+      'power.word.logoff': '注销',
+      'power.confirmTitle': '确认{action}',
+      'power.confirmBody': '对面的电脑会立刻{action}。这个动作不能撤销，连接会断。',
+      'power.cancel': '取消',
+      'power.confirm': '执行',
+
+      /* ---------- 断线重连 ---------- */
+      'reconnect.banner': '连接断了，正在重连（第 {n} 次）',
+      'reconnect.done': '已经连上',
 
       /* ---------- 设置 ---------- */
       'settings.title': '设置',
@@ -160,7 +211,15 @@
       'toast.logCleared': '日志已清空',
       'toast.codeSaved': '口令已记住',
       'toast.screenSwitched': '已切到 {name}',
-      'toast.quit': '程序退出了'
+      'toast.quit': '程序退出了',
+      'toast.filesUploaded': '{name} 已上传',
+      'toast.fileDownloaded': '{name} 已下载',
+      'toast.fileFailed': '传输失败',
+      'toast.clipboardSent': '已把剪贴板发给对面',
+      'toast.clipboardEmpty': '剪贴板里没有文字',
+      'toast.powerSent': '已发出{action}指令',
+      'toast.privacyOn': '隐私屏已开启',
+      'toast.privacyOff': '隐私屏已关闭'
     },
 
     en: {
@@ -195,6 +254,10 @@
       'home.myDevice.accessCodeHint': 'The other side types this code to connect',
       'home.myDevice.verifyCode': 'Safety code',
       'home.myDevice.verifyCodeHint': 'Have the other side check it; the numbers must match',
+      'home.myDevice.privacy': 'Privacy screen',
+      'home.myDevice.privacyOn': 'Stop the picture',
+      'home.myDevice.privacyOff': 'The picture is stopped',
+      'home.myDevice.privacyHint': 'While it is on the picture is not sent, so nobody behind the machine sees it',
       'home.share.waiting': 'Waiting',
       'home.share.sharing': 'Sharing',
       'home.share.warning': 'Something is wrong',
@@ -241,6 +304,7 @@
       'remote.toolbar.disconnect': 'Disconnect',
       'remote.toolbar.more': 'More',
       'remote.toolbar.files': 'File transfer',
+      'remote.toolbar.clipboard': 'Clipboard',
       'remote.toolbar.terminal': 'Terminal',
       'remote.toolbar.cloudKeyboard': 'On-screen keyboard',
       'remote.toolbar.gamepad': 'Gamepad',
@@ -252,6 +316,52 @@
       'remote.verify.hint': 'The same number on their screen means nobody is in between',
       'remote.notReady': 'This one is not wired up yet',
       'remote.notReadyHint': 'The backend does not have this yet',
+
+      /* ---------- file transfer ---------- */
+      'files.title': 'File transfer',
+      'files.upload': 'Upload file',
+      'files.go': 'Go',
+      'files.pathPlaceholder': 'A path under the home folder; empty means the home folder',
+      'files.home': 'Home',
+      'files.parent': 'One level up',
+      'files.empty': 'Nothing in this folder',
+      'files.loading': 'Reading',
+      'files.download': 'Download',
+      'files.uploading': 'Uploading',
+      'files.downloading': 'Downloading',
+      'files.done': 'Done',
+      'files.failed': 'The transfer failed',
+      'files.cancel': 'Cancel',
+      'files.readFailed': 'The file could not be read',
+
+      /* ---------- clipboard ---------- */
+      'clipboard.title': 'Clipboard',
+      'clipboard.placeholder': 'Text from the other side shows up here',
+      'clipboard.hint': 'The clipboard is shared by both sides.',
+      'clipboard.empty': 'Nothing has come from the other side yet.',
+      'clipboard.send': 'Send my clipboard',
+
+      /* ---------- privacy screen ---------- */
+      'privacy.on': 'The privacy screen is on, the picture is paused',
+      'privacy.labelOn': 'Privacy · on',
+
+      /* ---------- power ---------- */
+      'power.shutdown': 'Shut down',
+      'power.restart': 'Restart',
+      'power.sleep': 'Sleep',
+      'power.logoff': 'Sign out',
+      'power.word.shutdown': 'shut down',
+      'power.word.restart': 'restart',
+      'power.word.sleep': 'sleep',
+      'power.word.logoff': 'sign out',
+      'power.confirmTitle': 'Confirm {action}',
+      'power.confirmBody': 'The other computer will {action} right away. It cannot be undone, and the session will drop.',
+      'power.cancel': 'Cancel',
+      'power.confirm': 'Do it',
+
+      /* ---------- reconnecting ---------- */
+      'reconnect.banner': 'The connection dropped, reconnecting (attempt {n})',
+      'reconnect.done': 'Connected again',
 
       /* ---------- settings ---------- */
       'settings.title': 'Settings',
@@ -307,7 +417,15 @@
       'toast.logCleared': 'Log cleared',
       'toast.codeSaved': 'The code is remembered',
       'toast.screenSwitched': 'Switched to {name}',
-      'toast.quit': 'The program quit'
+      'toast.quit': 'The program quit',
+      'toast.filesUploaded': '{name} was uploaded',
+      'toast.fileDownloaded': '{name} was downloaded',
+      'toast.fileFailed': 'The transfer failed',
+      'toast.clipboardSent': 'Sent to the other side',
+      'toast.clipboardEmpty': 'There is no text in the clipboard',
+      'toast.powerSent': 'The {action} command was sent',
+      'toast.privacyOn': 'The privacy screen is on',
+      'toast.privacyOff': 'The privacy screen is off'
     }
   };
 

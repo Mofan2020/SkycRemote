@@ -181,7 +181,14 @@ fn main() -> anyhow::Result<()> {
                                             "skycremote: the other end is let in, the safety code is {verify_code}"
                                         );
                                     }
-                                    skycremote_core::host::HostEvent::Warning { message } => {
+                                                                        skycremote_core::host::HostEvent::Privacy { enabled } => {
+                                        if enabled {
+                                            eprintln!("skycremote: the privacy screen is on");
+                                        } else {
+                                            eprintln!("skycremote: the privacy screen is off");
+                                        }
+                                    }
+skycremote_core::host::HostEvent::Warning { message } => {
                                         eprintln!("skycremote: {message}");
                                     }
                                 }

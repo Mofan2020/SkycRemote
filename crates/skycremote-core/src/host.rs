@@ -21,12 +21,19 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::capture::{self, Screen};
+use crate::clipboard;
 use crate::encode::EncoderConfig;
+use crate::files;
 use crate::handshake::{self, HostIdentity};
 use crate::input;
 use crate::pipeline::{self, ScreenSource};
+use crate::power::{self, PowerAction};
 use crate::protocol::{Message, ScreenInfo};
+use crate::transfer;
 use crate::transport;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// How long to wait for the other end before trying again.
 ///
@@ -63,6 +70,11 @@ pub enum HostEvent {
     Verified {
         /// The six digits the two ends show to each other.
         verify_code: String,
+    },
+    /// The privacy screen was turned on or off from this side.
+    Privacy {
+        /// Whether the screen is hidden now.
+        enabled: bool,
     },
     /// Something is worth telling the user about, but the share goes on.
     Warning {
@@ -133,7 +145,7 @@ enum SourceCommand {
 #[derive(Clone)]
 pub struct HostUpdates {
     /// Where the new settings go.
-    sender: tokio::sync::mpsc::UnboundedSender<HostOptions>,
+    sender: tokio::sync::mpsc::UnboundedSender<HostUpdate>,
 }
 
 impl HostUpdates {
@@ -143,8 +155,29 @@ impl HostUpdates {
     /// pictures are made again with the new numbers, which costs one
     /// frame.
     pub fn send(&self, options: HostOptions) -> bool {
-        self.sender.send(options).is_ok()
+        self.sender.send(HostUpdate::Options(options)).is_ok()
     }
+
+    /// Turn the privacy screen on or off from this side.
+    ///
+    /// The privacy screen hides the screen of this machine from the
+    /// other end: the picture stops being sent.  It is the thing to
+    /// use when somebody is standing behind this machine and should
+    /// not see what is going on.
+    ///
+    /// It says whether the share was still there to be told.
+    pub fn set_privacy(&self, enabled: bool) -> bool {
+        self.sender.send(HostUpdate::Privacy(enabled)).is_ok()
+    }
+}
+
+/// A change to a share that is running.
+#[derive(Debug, Clone)]
+pub enum HostUpdate {
+    /// New numbers for the pictures.
+    Options(HostOptions),
+    /// The privacy screen is on or off.
+    Privacy(bool),
 }
 
 /// A share that is under the control of whoever started it.
@@ -158,15 +191,15 @@ pub struct HostService {
     /// The signal that says "stop".
     cancel: CancellationToken,
     /// Where the new settings go.
-    updates: tokio::sync::mpsc::UnboundedSender<HostOptions>,
+    updates: tokio::sync::mpsc::UnboundedSender<HostUpdate>,
     /// The new settings that come in.
-    incoming: tokio::sync::mpsc::UnboundedReceiver<HostOptions>,
+    incoming: tokio::sync::mpsc::UnboundedReceiver<HostUpdate>,
 }
 
 impl HostService {
     /// Make a share that is not running yet.
     pub fn new(options: HostOptions) -> Self {
-        let (updates, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (updates, incoming) = tokio::sync::mpsc::unbounded_channel::<HostUpdate>();
         Self {
             options,
             cancel: CancellationToken::new(),
@@ -288,6 +321,19 @@ impl HostService {
         let session = handshake::host_handshake(&sender, &mut receiver, &identity)
             .await
             .context("the other end was not let in")?;
+
+        // The privacy screen is on when the other end asks for it.  While
+        // it is on, the picture is not sent at all: the other end sees
+        // nothing of this machine.
+        let privacy = Arc::new(AtomicBool::new(false));
+
+        // The clipboard of this machine is watched, so that the other
+        // end can copy from here.  Only the text is sent.
+        let _clipboard_task = {
+            let sender = sender.clone();
+            let cancel = cancel.clone();
+            Some(tokio::spawn(clipboard_watch(sender, cancel)))
+        };
         let _ = events.send(HostEvent::Verified {
             verify_code: session.verify_code,
         });
@@ -308,6 +354,7 @@ impl HostService {
         let mut fps = self.options.fps;
         let mut bitrate = self.options.bitrate_bps;
         let picture_cancel = cancel.clone();
+        let picture_privacy = privacy.clone();
         tokio::spawn(async move {
             let mut current = picture_start;
             let mut source = match start_source(&current, bitrate, fps) {
@@ -323,7 +370,10 @@ impl HostService {
                     _ = picture_cancel.cancelled() => break,
                     picture = source.next_picture() => {
                         let Some(picture) = picture else { break };
-                        pipeline::send_picture(&picture_sender, &picture, frame_id);
+                        // With the privacy screen on, nothing is sent.
+                        if !picture_privacy.load(Ordering::Relaxed) {
+                            pipeline::send_picture(&picture_sender, &picture, frame_id);
+                        }
                         frame_id = frame_id.wrapping_add(1);
                     }
                     command = command_receiver.recv() => {
@@ -366,6 +416,9 @@ impl HostService {
             source.stop();
         });
 
+        // The files that are being sent to this machine.
+        let mut uploads: HashMap<u64, (std::path::PathBuf, u64)> = HashMap::new();
+
         // What comes back is the input.
         let mut injector = input::injector()?;
         loop {
@@ -377,11 +430,19 @@ impl HostService {
                 // the loop goes on waiting for the input.
                 change = self.incoming.recv() => {
                     match change {
-                        Some(options) => {
+                        Some(HostUpdate::Options(options)) => {
                             let _ = command_sender.send(SourceCommand::Update {
                                 fps: options.fps,
                                 bitrate_bps: options.bitrate_bps,
                             });
+                        }
+                        Some(HostUpdate::Privacy(enabled)) => {
+                            // The privacy screen is turned on from this
+                            // side: the other end is told, so that it
+                            // knows the screen went dark on purpose.
+                            privacy.store(enabled, Ordering::Relaxed);
+                            let _ = send(&sender, &Message::PrivacyScreen { enabled }).await;
+                            let _ = events.send(HostEvent::Privacy { enabled });
                         }
                         None => break,
                     }
@@ -420,6 +481,125 @@ impl HostService {
                         Message::SwitchScreen { index } => {
                             let _ = command_sender.send(SourceCommand::Switch(index));
                         }
+                        Message::FileListRequest { token, path } => {
+                            transfer::send_listing(&sender, token, &path).await;
+                        }
+                        Message::FileRequest { token, path } => {
+                            transfer::send_file(&sender, token, &path).await;
+                        }
+                        Message::FileUploadStart { token, path, size } => {
+                            let target = files::incoming_path(&path);
+                            let result = files::prepare_upload(&target.to_string_lossy());
+                            match result {
+                                Ok(()) => {
+                                    uploads.insert(token, (target, size));
+                                }
+                                Err(error) => {
+                                    let _ = send(
+                                        &sender,
+                                        &Message::FileError {
+                                            token,
+                                            message: error.to_string(),
+                                        },
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                        Message::FileUploadChunk {
+                            token,
+                            offset,
+                            data,
+                        } => {
+                            let Some((target, _)) = uploads.get(&token) else {
+                                continue;
+                            };
+                            let bytes = match transfer::decode_piece(&data) {
+                                Some(bytes) => bytes,
+                                None => {
+                                    let _ = send(
+                                        &sender,
+                                        &Message::FileError {
+                                            token,
+                                            message: "这一块文件读不出来".to_string(),
+                                        },
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            };
+                            if let Err(error) =
+                                files::write_chunk(&target.to_string_lossy(), offset, &bytes)
+                            {
+                                let _ = send(
+                                    &sender,
+                                    &Message::FileError {
+                                        token,
+                                        message: error.to_string(),
+                                    },
+                                )
+                                .await;
+                            }
+                        }
+                        Message::FileUploadEnd { token, path } => {
+                            let target = uploads.remove(&token);
+                            let name = target
+                                .map(|(target, _)| {
+                                    target
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.clone())
+                                })
+                                .unwrap_or(path);
+                            let _ = events.send(HostEvent::Warning {
+                                message: format!("收到了文件 {name}"),
+                            });
+                        }
+                        Message::Clipboard { text } => {
+                            // The other end copied something.  It is put
+                            // on this machine's clipboard, and it is not
+                            // sent back again.
+                            if let Err(error) = clipboard::write_text(&text) {
+                                eprintln!("skycremote: the clipboard was not written: {error}");
+                            }
+                        }
+                        Message::PrivacyScreen { enabled } => {
+                            privacy.store(enabled, Ordering::Relaxed);
+                            let _ = events.send(HostEvent::Warning {
+                                message: if enabled {
+                                    "画面已经停下来了".to_string()
+                                } else {
+                                    "画面又回来了".to_string()
+                                },
+                            });
+                        }
+                        Message::Power { action } => {
+                            let Some(wanted) = PowerAction::parse(&action) else {
+                                let _ = send(
+                                    &sender,
+                                    &Message::Error {
+                                        code: "unknownPower".to_string(),
+                                        message: "看不懂要做什么".to_string(),
+                                    },
+                                )
+                                .await;
+                                continue;
+                            };
+                            let _ = events.send(HostEvent::Warning {
+                                message: format!("对面要这台电脑{}", power_word(wanted)),
+                            });
+                            if let Err(error) = power::perform(wanted) {
+                                eprintln!("skycremote: the machine would not do that: {error}");
+                                let _ = send(
+                                    &sender,
+                                    &Message::Error {
+                                        code: "powerFailed".to_string(),
+                                        message: error,
+                                    },
+                                )
+                                .await;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -451,6 +631,42 @@ fn screen_to_info(screen: &Screen) -> ScreenInfo {
         height: screen.height,
         scale_factor: screen.scale_factor,
         primary: screen.primary,
+    }
+}
+
+/// The word a person would use for what the machine is asked to do.
+fn power_word(action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::Shutdown => "关机",
+        PowerAction::Restart => "重启",
+        PowerAction::Sleep => "睡眠",
+        PowerAction::LogOff => "注销",
+    }
+}
+
+/// Watch the clipboard of this machine and tell the other end about it.
+///
+/// The text is only sent when it changed, so that the other end is not
+/// sent the same thing over and over.  The text that came from the
+/// other end is written on this machine, and it is not sent back: that
+/// would keep the two ends going back and forth for ever.
+async fn clipboard_watch(sender: transport::Sender, cancel: tokio_util::sync::CancellationToken) {
+    let mut last = String::new();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(800)) => {}
+        }
+        let Ok(text) = clipboard::read_text() else {
+            continue;
+        };
+        if text.is_empty() || text == last {
+            continue;
+        }
+        last = text.clone();
+        if send(&sender, &Message::Clipboard { text }).await.is_err() {
+            return;
+        }
     }
 }
 

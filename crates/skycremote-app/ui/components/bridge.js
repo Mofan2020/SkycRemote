@@ -186,9 +186,37 @@
     };
   }
 
+  /**
+   * Normalise one entry of a folder listing.
+   *
+   * Rust's serde emits `is_dir` (snake_case, as in
+   * `skycremote-core/src/protocol.rs`), while the UI code uses
+   * `isDir`.  Accept both so the bridge does not have to care which
+   * side produced the entry.
+   */
+  function normaliseFileEntry(entry) {
+    if (!entry) return null;
+    var isDir = entry.isDir !== undefined ? entry.isDir : entry.is_dir;
+    return {
+      name: entry.name || '',
+      isDir: !!isDir,
+      size: Number(entry.size) || 0
+    };
+  }
+
   /* ------------------------------------------------------------------
    * Mock implementation
    * ---------------------------------------------------------------- */
+
+  // Every transfer the mock hands out gets a token, the way the
+  // real backend names one transfer at a time.
+  var mockToken = 0;
+  var mockUploads = {};
+
+  function nextToken() {
+    mockToken += 1;
+    return mockToken;
+  }
 
   var mockState = {
     connected: false,
@@ -268,13 +296,28 @@
       case 'listDevices':
         return delay(140, FAKE_DEVICES.slice());
 
-      case 'listFiles':
-        return delay(180, FAKE_FILES[payload.path] || []);
+      case 'listFiles': {
+        var wanted = payload.path || '';
+        var entries = FAKE_FILES[wanted] ||
+          FAKE_FILES['/' + wanted] ||
+          (wanted ? [] : FAKE_FILES['/']);
+        var listToken = nextToken();
+        setTimeout(function () {
+          emitLocal('files', { token: listToken, path: wanted, entries: entries });
+        }, 220);
+        return delay(180, { ok: true, token: listToken });
+      }
 
       case 'sendInput':
         // Input is fire-and-forget.  A real backend would ship the
         // `InputEvent` enum to the peer.
         return delay(0, { ok: true });
+
+      case 'sendClipboard':
+        setTimeout(function () {
+          emitLocal('clipboard', { text: payload.text || '' });
+        }, 60);
+        return delay(40, { ok: true });
 
       case 'powerAction':
         return delay(120, { ok: true, action: payload.action });
@@ -316,11 +359,72 @@
       case 'quit':
         return delay(20, { ok: true });
 
-      case 'uploadFile':
-        return delay(100, { ok: true, name: payload.name });
+      case 'uploadStart': {
+        var uploadToken = nextToken();
+        mockUploads[uploadToken] = {
+          name: payload.name || '',
+          size: Number(payload.size) || 0,
+          sent: 0
+        };
+        return delay(80, { ok: true, token: uploadToken });
+      }
 
-      case 'downloadFile':
-        return delay(100, { ok: true, name: payload.name });
+      case 'uploadChunk': {
+        var upload = mockUploads[payload.token];
+        if (upload) {
+          // The chunk is base64, so three bytes make four characters.
+          upload.sent += Math.round(String(payload.data || '').length * 3 / 4);
+        }
+        return delay(20, { ok: true });
+      }
+
+      case 'uploadEnd': {
+        var finished = mockUploads[payload.token];
+        if (finished) {
+          emitLocal('uploadProgress', {
+            token: payload.token,
+            sent: finished.size,
+            size: finished.size
+          });
+          emitLocal('uploadDone', { token: payload.token, name: finished.name });
+          delete mockUploads[payload.token];
+        }
+        return delay(40, { ok: true });
+      }
+
+      case 'downloadFile': {
+        var fileToken = nextToken();
+        var fileName = String(payload.path || '').split('/').pop() || 'file';
+        var total = 2 * 1024 * 1024;
+        var got = 0;
+        setTimeout(function () {
+          var timer = setInterval(function () {
+            got += total / 8;
+            if (got >= total) {
+              clearInterval(timer);
+              emitLocal('fileDone', {
+                token: fileToken,
+                name: fileName,
+                size: total,
+                path: '/Users/skyc/Downloads/' + fileName
+              });
+              return;
+            }
+            emitLocal('fileProgress', {
+              token: fileToken,
+              received: Math.round(got),
+              size: total
+            });
+          }, 120);
+        }, 120);
+        return delay(100, { ok: true, token: fileToken });
+      }
+
+      case 'togglePrivacyScreen': {
+        mockState.privacyScreen = !!payload.enabled;
+        emitLocal('privacy', { enabled: mockState.privacyScreen });
+        return delay(80, { ok: true, enabled: mockState.privacyScreen });
+      }
 
       case 'cancelTransfer':
         return delay(40, { ok: true });
@@ -452,6 +556,7 @@
     on: on,
     emit: emitNative,
     normaliseScreen: normaliseScreen,
+    normaliseFileEntry: normaliseFileEntry,
 
     // mock-only helpers, used by the UI to simulate a session
     mock: {

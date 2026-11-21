@@ -112,6 +112,16 @@
           </div>
         </div>
 
+        <div class="kv" id="my-privacy-row" hidden>
+          <span class="kv-label" data-i18n="home.myDevice.privacy">隐私屏</span>
+          <span class="kv-value" id="my-privacy-value"></span>
+          <button id="my-privacy-toggle" class="btn btn-ghost btn-sm" type="button" aria-pressed="false">
+            <span class="icon" data-icon="eye"></span>
+            <span id="my-privacy-toggle-label" data-i18n="home.myDevice.privacyOn">把画面停掉</span>
+          </button>
+          <p class="kv-hint" data-i18n="home.myDevice.privacyHint">开着的时候画面不再发出去，旁边有人也看不到</p>
+        </div>
+
         <footer class="card-foot">
           <button id="share-toggle" class="btn btn-primary" type="button">
             <span class="icon" data-icon="play"></span>
@@ -172,10 +182,38 @@
         <p data-i18n="remote.placeholder">还没有画面</p>
       </div>
 
+      <div id="reconnect-banner" class="reconnect-banner" hidden>
+        <span class="icon" data-icon="refresh"></span>
+        <span id="reconnect-text"></span>
+      </div>
+
+      <div id="privacy-veil" class="privacy-veil" hidden>
+        <span class="icon" data-icon="eye-off"></span>
+        <p data-i18n="privacy.on">隐私屏已开启，画面已暂停</p>
+      </div>
+
       <button id="remote-back" class="back-btn" type="button" data-i18n-title="remote.back">
         <span class="icon" data-icon="chevron-left"></span>
         <span class="tb-label" data-i18n="remote.back">返回设备列表</span>
       </button>
+
+      <div id="clipboard-panel" class="popover" hidden>
+        <header class="popover-head">
+          <span class="popover-title" data-i18n="clipboard.title">剪贴板</span>
+          <button id="clipboard-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close">
+            <span class="icon" data-icon="x"></span>
+          </button>
+        </header>
+        <div class="popover-body">
+          <textarea id="clipboard-text" class="clipboard-text" rows="6" spellcheck="false"
+                    data-i18n-placeholder="clipboard.placeholder"></textarea>
+          <p id="clipboard-hint" class="popover-hint"></p>
+          <button id="clipboard-send" class="btn btn-primary btn-sm" type="button">
+            <span class="icon" data-icon="upload"></span>
+            <span data-i18n="clipboard.send">发送本机剪贴板</span>
+          </button>
+        </div>
+      </div>
 
       <div id="remote-toolbar" class="toolbar" role="toolbar">
 
@@ -228,15 +266,51 @@
             <span class="icon" data-icon="maximize"></span>
           </button>
 
+          <button id="btn-file" class="tb-btn" type="button" data-i18n-title="remote.toolbar.files">
+            <span class="icon" data-icon="folder"></span>
+            <span class="tb-label" data-i18n="remote.toolbar.files">文件传输</span>
+          </button>
+
+          <button id="btn-clipboard" class="tb-btn" type="button" data-i18n-title="remote.toolbar.clipboard">
+            <span class="icon" data-icon="clipboard"></span>
+            <span class="tb-label" data-i18n="remote.toolbar.clipboard">剪贴板</span>
+          </button>
+
+          <button id="btn-privacy" class="tb-btn tb-switch" type="button" role="switch" aria-checked="false"
+                  data-i18n-title="remote.toolbar.privacy">
+            <span class="icon" data-icon="eye-off"></span>
+            <span class="tb-label" data-i18n="remote.toolbar.privacy">隐私屏</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </button>
+
+          <div class="menu-wrap">
+            <button id="btn-power" class="tb-btn" type="button" aria-haspopup="true" aria-expanded="false"
+                    data-i18n-title="remote.toolbar.power">
+              <span class="icon" data-icon="power"></span>
+              <span class="tb-label" data-i18n="remote.toolbar.power">电源</span>
+            </button>
+            <div id="power-menu" class="menu" role="menu" hidden>
+              <button class="menu-item" type="button" role="menuitem" data-power="shutdown">
+                <span class="icon" data-icon="power"></span><span data-i18n="power.shutdown">关机</span>
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-power="restart">
+                <span class="icon" data-icon="refresh"></span><span data-i18n="power.restart">重启</span>
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-power="sleep">
+                <span class="icon" data-icon="moon"></span><span data-i18n="power.sleep">睡眠</span>
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-power="logoff">
+                <span class="icon" data-icon="log-out"></span><span data-i18n="power.logoff">注销</span>
+              </button>
+            </div>
+          </div>
+
           <div class="menu-wrap">
             <button id="more-btn" class="tb-btn tb-icon" type="button" aria-haspopup="true" aria-expanded="false"
                     data-i18n-title="remote.toolbar.more">
               <span class="icon" data-icon="more-horizontal"></span>
             </button>
             <div id="more-menu" class="menu" role="menu" hidden>
-              <button class="menu-item" id="btn-file" type="button" role="menuitem">
-                <span class="icon" data-icon="folder"></span><span data-i18n="remote.toolbar.files">文件传输</span>
-              </button>
               <button class="menu-item" id="btn-terminal" type="button" role="menuitem">
                 <span class="icon" data-icon="terminal"></span><span data-i18n="remote.toolbar.terminal">终端</span>
               </button>
@@ -249,14 +323,8 @@
               <button class="menu-item" id="btn-mapping" type="button" role="menuitem">
                 <span class="icon" data-icon="keyboard"></span><span data-i18n="remote.toolbar.mapping">按键映射</span>
               </button>
-              <button class="menu-item" id="btn-privacy" type="button" role="menuitem">
-                <span class="icon" data-icon="eye-off"></span><span data-i18n="remote.toolbar.privacy">隐私屏</span>
-              </button>
               <button class="menu-item" id="btn-virtual-screen" type="button" role="menuitem">
                 <span class="icon" data-icon="layers"></span><span data-i18n="remote.toolbar.virtual">虚拟屏幕</span>
-              </button>
-              <button class="menu-item" id="btn-power" type="button" role="menuitem">
-                <span class="icon" data-icon="power"></span><span data-i18n="remote.toolbar.power">电源</span>
               </button>
             </div>
           </div>
@@ -269,6 +337,43 @@
       </div>
     </div>
   </section>
+
+  <!-- ======================= FILE TRANSFER ======================= -->
+  <aside id="files-panel" class="drawer drawer-right drawer-wide" aria-label="File transfer" hidden>
+    <header class="drawer-head">
+      <h2 class="drawer-title"><span class="icon" data-icon="folder"></span><span data-i18n="files.title">文件传输</span></h2>
+      <button id="files-close" class="icon-btn icon-btn-sm" type="button" data-i18n-title="common.close">
+        <span class="icon" data-icon="x"></span>
+      </button>
+    </header>
+
+    <div class="files-bar">
+      <div id="files-path" class="files-path"></div>
+      <div class="files-jump">
+        <input id="files-path-input" class="input" type="text" spellcheck="false" autocomplete="off"
+               data-i18n-placeholder="files.pathPlaceholder">
+        <button id="files-go" class="btn btn-secondary btn-sm" type="button" data-i18n="files.go">前往</button>
+      </div>
+    </div>
+
+    <div class="files-actions">
+      <button id="files-upload-btn" class="btn btn-primary btn-sm" type="button">
+        <span class="icon" data-icon="upload"></span>
+        <span data-i18n="files.upload">上传文件</span>
+      </button>
+      <input id="files-upload-input" type="file" multiple hidden>
+    </div>
+
+    <div id="files-transfers" class="files-transfers"></div>
+
+    <div id="files-list" class="files-list"></div>
+
+    <p id="files-empty" class="files-empty" hidden></p>
+
+    <footer class="drawer-foot">
+      <span id="files-status" class="files-status"></span>
+    </footer>
+  </aside>
 
   <!-- ======================= SETTINGS ======================= -->
   <aside id="settings-panel" class="drawer drawer-right" aria-label="Settings" hidden>
@@ -424,6 +529,26 @@
         <div class="modal-foot-right">
           <button id="access-cancel" class="btn btn-ghost" type="button" data-i18n="access.cancel">取消</button>
           <button id="access-ok" class="btn btn-primary" type="button" data-i18n="access.confirm">连接</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ======================= POWER ======================= -->
+  <div id="power-dialog" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="power-title">
+      <header class="modal-head">
+        <h2 id="power-title"></h2>
+      </header>
+
+      <div class="modal-body">
+        <p class="modal-line" id="power-body"></p>
+      </div>
+
+      <footer class="modal-foot">
+        <div class="modal-foot-right">
+          <button id="power-cancel" class="btn btn-ghost" type="button" data-i18n="power.cancel">取消</button>
+          <button id="power-confirm" class="btn btn-primary" type="button" data-i18n="power.confirm">执行</button>
         </div>
       </footer>
     </div>

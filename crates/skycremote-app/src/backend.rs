@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender as ChannelSender;
 use std::sync::{Arc, Mutex};
@@ -366,6 +366,69 @@ struct Session {
     sender: transport::Sender,
 }
 
+/// The file transfers that are going on.
+///
+/// Every transfer has a number, so that the answer can be paired with
+/// the question even when two of them are going at the same time.
+#[derive(Debug, Default)]
+struct TransferState {
+    /// The number of the next transfer.
+    next: Mutex<u64>,
+    /// The uploads that are going on, by number.
+    uploads: Mutex<HashMap<u64, Upload>>,
+}
+
+/// One file that is being received.
+struct IncomingFile {
+    /// The file being written.
+    file: std::fs::File,
+    /// How many bytes are expected.
+    size: u64,
+    /// How many bytes have arrived.
+    received: u64,
+    /// Where the file is being written.
+    path: std::path::PathBuf,
+}
+
+/// One file that is being sent.
+#[derive(Debug)]
+struct Upload {
+    /// The name of the file.
+    name: String,
+}
+
+impl TransferState {
+    /// The number of the next transfer.
+    fn next_token(&self) -> u64 {
+        let mut slot = self.next.lock().expect("the transfer number lock");
+        *slot += 1;
+        *slot
+    }
+
+    /// Remember a file that is being sent.
+    fn begin_upload(&self, token: u64, name: &str) {
+        let mut slot = self.uploads.lock().expect("the upload lock");
+        slot.insert(
+            token,
+            Upload {
+                name: name.to_string(),
+            },
+        );
+    }
+
+    /// The file is sent: this gives back its name.
+    fn finish_upload(&self, token: u64) -> Option<String> {
+        let mut slot = self.uploads.lock().expect("the upload lock");
+        slot.remove(&token).map(|upload| upload.name)
+    }
+
+    /// Forget a transfer.
+    fn cancel(&self, token: u64) {
+        let mut uploads = self.uploads.lock().expect("the upload lock");
+        uploads.remove(&token);
+    }
+}
+
 /// One line in the log the window shows.
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
@@ -378,6 +441,13 @@ pub struct LogEntry {
     pub message: String,
 }
 
+/// How many times the connection is made again after the line goes down.
+const RECONNECT_TRIES: u32 = 10;
+
+/// How long the first pause between two tries is.  It grows with every
+/// try, so that a machine that is not there is not hammered.
+const RECONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How many lines the log keeps.  Older ones are let go.
 const LOG_LIMIT: usize = 500;
 
@@ -388,7 +458,16 @@ pub struct Backend {
     /// What is remembered between runs.
     settings: Settings,
     /// The session, when one is up.
-    session: Option<Session>,
+    ///
+    /// It sits behind a lock because two things need it: the window's
+    /// thread, which sends the input, and the task that reads from the
+    /// other end, which puts a new session in place when the line goes
+    /// down and comes back.
+    session: Arc<Mutex<Option<Session>>>,
+    /// The file transfers that are going on.
+    transfers: Arc<TransferState>,
+    /// The signal that stops the session task when the person hangs up.
+    session_cancel: Arc<tokio_util::sync::CancellationToken>,
     /// The signal that stops the share, when this machine is sharing.
     host: Option<tokio_util::sync::CancellationToken>,
     /// How to change the settings of the share that is running.
@@ -416,7 +495,9 @@ impl Backend {
         Self {
             out,
             settings,
-            session: None,
+            session: Arc::new(Mutex::new(None)),
+            transfers: Arc::new(TransferState::default()),
+            session_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             host: None,
             host_updates: None,
             tracker_cancel: None,
@@ -548,11 +629,16 @@ impl Backend {
             "saveSettings" => self.save_settings(payload),
             "listDevices" => self.list_devices().await,
             "setQuality" | "setBitrate" | "setFramerate" => self.set_quality(command, payload),
-            "togglePrivacyScreen" => Err(not_done("privacyScreen")),
-            "powerAction" => Err(not_done("powerAction")),
-            "listFiles" | "uploadFile" | "downloadFile" | "cancelTransfer" => {
-                Err(not_done("fileTransfer"))
-            }
+            "togglePrivacyScreen" => self.toggle_privacy(payload).await,
+            "toggleHostPrivacy" => self.toggle_host_privacy(payload),
+            "powerAction" => self.power_action(payload).await,
+            "listFiles" => self.list_files(payload).await,
+            "downloadFile" => self.download_file(payload).await,
+            "uploadStart" => self.upload_start(payload).await,
+            "uploadChunk" => self.upload_chunk(payload).await,
+            "uploadEnd" => self.upload_end(payload).await,
+            "cancelTransfer" => self.cancel_transfer(payload),
+            "sendClipboard" => self.send_clipboard(payload).await,
             "terminalExec" => Err(not_done("terminal")),
             other => Err(anyhow!("the command `{other}` is not known")),
         }
@@ -572,7 +658,7 @@ impl Backend {
         if device_id.is_empty() {
             return Err(anyhow!("the id of the device is missing"));
         }
-        if self.session.is_some() {
+        if self.has_session() {
             return Err(anyhow!("there is already a session"));
         }
 
@@ -596,19 +682,6 @@ impl Backend {
             return Err(Refused::refused("noAccessCode", "还没有填访问口令"));
         }
 
-        let (sender, receiver) = transport::connect_direct(&tracker, &device_id)
-            .await
-            .map_err(|error| anyhow!("连不上 {device_id}：{error}"))?;
-
-        // Read these before the sender is put away, so that the
-        // numbers are of the connection that was just made.
-        let peer = sender.peer_address().to_string();
-        let latency = sender.latency_us() as f64 / 1000.0;
-
-        // The handshake is where the two ends say who they are and
-        // prove that they know the access code.  Nothing is shared
-        // before it is done.
-        let mut receiver = receiver;
         let identity = HostIdentity {
             device_id: self.settings.device_id(),
             device_name: self.settings.device_name(),
@@ -616,13 +689,10 @@ impl Backend {
             salt: Vec::new(),
             verifier: [0u8; 32],
         };
-        let session =
-            match handshake::controller_handshake(&sender, &mut receiver, &identity, &access_code)
-                .await
-            {
-                Ok(session) => session,
+        let (sender, receiver, verify_code) =
+            match Self::open_session(&tracker, &device_id, &access_code, &identity).await {
+                Ok(parts) => parts,
                 Err(error) => {
-                    sender.close();
                     let text = error.to_string();
                     if text.contains("口令") {
                         return Err(Refused::refused("accessDenied", "访问口令不对"));
@@ -631,7 +701,12 @@ impl Backend {
                 }
             };
 
-        self.session = Some(Session { sender });
+        // Read these before the sender is put away, so that the
+        // numbers are of the connection that was just made.
+        let peer = sender.peer_address().to_string();
+        let latency = sender.latency_us() as f64 / 1000.0;
+
+        self.set_session(Some(Session { sender }));
         self.log("info", format!("连上了 {device_id}"));
         self.emit(
             "connection",
@@ -640,24 +715,26 @@ impl Backend {
                 "deviceId": device_id,
                 "peer": peer,
                 "latencyMs": latency,
-                "verifyCode": session.verify_code,
+                "verifyCode": verify_code,
             }),
         );
 
         // The other end talks back on its own: the list of screens, the
         // pictures, and the messages of the person on the other side.
-        self.listen(receiver);
+        // When the line goes down, this task tries to make it again.
+        self.listen(receiver, tracker, device_id.clone(), access_code, identity);
 
         Ok(json!({
             "ok": true,
             "deviceId": device_id,
-            "verifyCode": session.verify_code,
+            "verifyCode": verify_code,
         }))
     }
 
     /// Hang up.
     fn disconnect(&mut self) -> Result<Value> {
-        let had = self.session.take();
+        self.session_cancel.cancel();
+        let had = self.take_session();
         if let Some(session) = had {
             session.sender.close();
             self.log("info", "挂断了");
@@ -747,6 +824,19 @@ impl Backend {
                         );
                         json!({ "state": "sharing", "verifyCode": verify_code })
                     }
+                    skycremote_core::host::HostEvent::Privacy { enabled } => {
+                        log_to(
+                            &out,
+                            &logs,
+                            "info",
+                            if enabled {
+                                "隐私屏打开了，画面不再往外发".to_string()
+                            } else {
+                                "隐私屏关了，画面又发出去了".to_string()
+                            },
+                        );
+                        json!({ "state": "sharing", "privacy": enabled })
+                    }
                     skycremote_core::host::HostEvent::Warning { message } => {
                         log_to(&out, &logs, "warning", message.clone());
                         json!({ "state": "warning", "message": message })
@@ -785,63 +875,314 @@ impl Backend {
     }
 
     /// Read what the other end says, and pass it on to the window.
-    fn listen(&self, mut receiver: transport::Receiver) {
+    ///
+    /// When the line goes down, the connection is made again by itself:
+    /// the person did not ask for it to end, so it should not end.  The
+    /// window is told what is going on while that happens.
+    fn listen(
+        &self,
+        receiver: transport::Receiver,
+        tracker: String,
+        device_id: String,
+        access_code: String,
+        identity: HostIdentity,
+    ) {
         let out = self.out.clone();
+        let logs = Arc::clone(&self.logs);
+        let session = self.session.clone();
+        let cancel = self.session_cancel.clone();
+        let downloads: Arc<Mutex<HashMap<u64, IncomingFile>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(async move {
-            let mut assembler = FrameAssembler::new();
+            let mut receiver = receiver;
             loop {
-                match receiver.recv().await {
-                    transport::Incoming::Video(datagram) => match assembler.push(&datagram) {
-                        Ok(Some(picture)) => {
-                            push_picture(&out, &picture);
-                        }
-                        Ok(None) => {}
-                        Err(_) => {}
-                    },
-                    transport::Incoming::Control(bytes) => {
-                        let Ok(text) = std::str::from_utf8(&bytes) else {
-                            continue;
-                        };
-                        let Ok(message) = serde_json::from_str::<Message>(text) else {
-                            continue;
-                        };
-                        match message {
-                            Message::Screens { screens } => {
-                                let screens: Vec<Value> = screens
-                                    .iter()
-                                    .map(|screen| {
-                                        serde_json::to_value(screen).unwrap_or(Value::Null)
-                                    })
-                                    .collect();
-                                emit_to(&out, "screens", json!({ "screens": screens }));
-                            }
-                            Message::Error { code, message } => {
-                                emit_to(
-                                    &out,
-                                    "toast",
-                                    json!({ "kind": "error", "code": code, "message": message }),
-                                );
-                            }
-                            other => {
-                                emit_to(
-                                    &out,
-                                    "connection",
-                                    json!({ "state": "message", "message": other }),
-                                );
-                            }
-                        }
+                let closed = Self::read_session(&mut receiver, &out, &downloads).await;
+                if cancel.is_cancelled() {
+                    // The person hung up on purpose.  Nothing is done.
+                    return;
+                }
+                if !closed {
+                    // The other end said goodbye.
+                    emit_to(
+                        &out,
+                        "disconnect",
+                        json!({ "reason": "the other end hung up" }),
+                    );
+                    return;
+                }
+
+                // The line went down by itself.  The connection is made
+                // again, with a pause that grows a little every time,
+                // so that a machine which is not there is not hammered.
+                let mut attempt = 0;
+                let mut back = false;
+                while !back {
+                    attempt += 1;
+                    if attempt > RECONNECT_TRIES {
+                        emit_to(&out, "disconnect", json!({ "reason": "连不上了" }));
+                        return;
                     }
-                    transport::Incoming::Closed => {
-                        emit_to(
-                            &out,
-                            "disconnect",
-                            json!({ "reason": "the other end hung up" }),
-                        );
-                        break;
+                    emit_to(
+                        &out,
+                        "connection",
+                        json!({ "state": "reconnecting", "attempt": attempt }),
+                    );
+                    let wait = RECONNECT_WAIT * attempt;
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                    match Self::open_session(&tracker, &device_id, &access_code, &identity).await {
+                        Ok((sender, new_receiver, verify_code)) => {
+                            if let Ok(mut slot) = session.lock() {
+                                *slot = Some(Session { sender });
+                            }
+                            log_to(
+                                &out,
+                                &logs,
+                                "info",
+                                format!("第 {attempt} 次重连成功，安全码 {verify_code}"),
+                            );
+                            emit_to(
+                                &out,
+                                "connection",
+                                json!({
+                                    "state": "reconnected",
+                                    "attempt": attempt,
+                                    "verifyCode": verify_code,
+                                }),
+                            );
+                            receiver = new_receiver;
+                            back = true;
+                        }
+                        Err(error) => {
+                            log_to(&out, &logs, "warning", format!("重连没有成功：{error}"));
+                        }
                     }
                 }
             }
         });
+    }
+
+    /// Read one session from the other end.
+    ///
+    /// It says whether the line went down by itself (true) or the other end
+    /// said goodbye (false).  The window is told about everything that
+    /// arrives.
+    async fn read_session(
+        receiver: &mut transport::Receiver,
+        out: &ChannelSender<Out>,
+        downloads: &Arc<Mutex<HashMap<u64, IncomingFile>>>,
+    ) -> bool {
+        let mut assembler = FrameAssembler::new();
+        loop {
+            match receiver.recv().await {
+                transport::Incoming::Video(datagram) => match assembler.push(&datagram) {
+                    Ok(Some(picture)) => push_picture(out, &picture),
+                    Ok(None) => {}
+                    Err(_) => {}
+                },
+                transport::Incoming::Control(bytes) => {
+                    let Ok(text) = std::str::from_utf8(&bytes) else {
+                        continue;
+                    };
+                    let Ok(message) = serde_json::from_str::<Message>(text) else {
+                        continue;
+                    };
+                    match message {
+                        Message::Screens { screens } => {
+                            let screens: Vec<Value> = screens
+                                .iter()
+                                .map(|screen| serde_json::to_value(screen).unwrap_or(Value::Null))
+                                .collect();
+                            emit_to(out, "screens", json!({ "screens": screens }));
+                        }
+                        Message::Error { code, message } => {
+                            emit_to(
+                                out,
+                                "toast",
+                                json!({ "kind": "error", "code": code, "message": message }),
+                            );
+                        }
+                        Message::Clipboard { text } => {
+                            // The other end copied something.  It is put on
+                            // this machine's clipboard, so that pasting
+                            // here works, and the window shows it.
+                            let _ = skycremote_core::clipboard::write_text(&text);
+                            emit_to(out, "clipboard", json!({ "text": text }));
+                        }
+                        Message::PrivacyScreen { enabled } => {
+                            emit_to(out, "privacy", json!({ "enabled": enabled }));
+                        }
+                        Message::FileList {
+                            token,
+                            path,
+                            entries,
+                        } => {
+                            let entries: Vec<Value> = entries
+                                .iter()
+                                .map(|entry| serde_json::to_value(entry).unwrap_or(Value::Null))
+                                .collect();
+                            emit_to(
+                                out,
+                                "files",
+                                json!({
+                                    "token": token,
+                                    "path": path,
+                                    "entries": entries,
+                                }),
+                            );
+                        }
+                        Message::FileDownloadStart { token, path, size } => {
+                            let target = download_path(&path);
+                            match std::fs::File::create(&target) {
+                                Ok(file) => {
+                                    let mut downloads =
+                                        downloads.lock().expect("the download lock");
+                                    downloads.insert(
+                                        token,
+                                        IncomingFile {
+                                            file,
+                                            size,
+                                            received: 0,
+                                            path: target,
+                                        },
+                                    );
+                                }
+                                Err(error) => {
+                                    emit_to(
+                                        out,
+                                        "fileError",
+                                        json!({
+                                            "token": token,
+                                            "message": format!("这个文件存不下来：{error}"),
+                                        }),
+                                    );
+                                }
+                            }
+                            emit_to(
+                                out,
+                                "fileProgress",
+                                json!({
+                                    "token": token,
+                                    "received": 0,
+                                    "size": size,
+                                }),
+                            );
+                        }
+                        Message::FileDownloadChunk {
+                            token,
+                            offset,
+                            data,
+                        } => {
+                            let bytes = match base64::Engine::decode(
+                                &base64::engine::general_purpose::STANDARD,
+                                &data,
+                            ) {
+                                Ok(bytes) => bytes,
+                                Err(_) => {
+                                    emit_to(
+                                        out,
+                                        "fileError",
+                                        json!({
+                                            "token": token,
+                                            "message": "这一块文件读不出来".to_string(),
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            };
+                            let mut received = 0u64;
+                            let mut total = 0u64;
+                            {
+                                let mut slot = downloads.lock().expect("the download lock");
+                                if let Some(incoming) = slot.get_mut(&token) {
+                                    use std::io::{Seek, SeekFrom, Write};
+                                    if incoming.file.seek(SeekFrom::Start(offset)).is_ok() {
+                                        let _ = incoming.file.write_all(&bytes);
+                                    }
+                                    incoming.received = offset + bytes.len() as u64;
+                                    received = incoming.received;
+                                    total = incoming.size;
+                                }
+                            }
+                            emit_to(
+                                out,
+                                "fileProgress",
+                                json!({
+                                    "token": token,
+                                    "received": received,
+                                    "size": total,
+                                }),
+                            );
+                        }
+                        Message::FileDownloadEnd { token, path } => {
+                            let mut slot = downloads.lock().expect("the download lock");
+                            let incoming = slot.remove(&token);
+                            drop(slot);
+                            let name = std::path::Path::new(&path)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path.clone());
+                            let size = incoming.as_ref().map(|file| file.received).unwrap_or(0);
+                            let landed = incoming
+                                .map(|file| file.path)
+                                .unwrap_or_else(|| download_path(&path));
+                            emit_to(
+                                out,
+                                "fileDone",
+                                json!({
+                                    "token": token,
+                                    "name": name,
+                                    "size": size,
+                                    "path": landed.to_string_lossy().to_string(),
+                                }),
+                            );
+                        }
+                        Message::FileError { token, message } => {
+                            emit_to(
+                                out,
+                                "fileError",
+                                json!({
+                                    "token": token,
+                                    "message": message,
+                                }),
+                            );
+                        }
+                        other => {
+                            emit_to(
+                                out,
+                                "connection",
+                                json!({ "state": "message", "message": other }),
+                            );
+                        }
+                    }
+                }
+                transport::Incoming::Closed => return true,
+            }
+        }
+    }
+
+    /// Make a connection and do the handshake.
+    ///
+    /// It gives back the way out, the way in, and the six digits the two
+    /// ends show to each other.
+    async fn open_session(
+        tracker: &str,
+        device_id: &str,
+        access_code: &str,
+        identity: &HostIdentity,
+    ) -> Result<(transport::Sender, transport::Receiver, String)> {
+        let (sender, mut receiver) = transport::connect_direct(tracker, device_id)
+            .await
+            .map_err(|error| anyhow!("连不上 {device_id}：{error}"))?;
+        match handshake::controller_handshake(&sender, &mut receiver, identity, access_code).await {
+            Ok(session) => Ok((sender, receiver, session.verify_code)),
+            Err(error) => {
+                sender.close();
+                Err(error)
+            }
+        }
     }
 
     // MARK: - The screen
@@ -883,6 +1224,151 @@ impl Backend {
         let event: InputEvent =
             serde_json::from_value(payload.clone()).map_err(|error| anyhow!(error.to_string()))?;
         self.send(&Message::Input(event)).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    // MARK: - The files, the clipboard, the power
+
+    /// Ask the other end what is in a folder.
+    async fn list_files(&mut self, payload: &Value) -> Result<Value> {
+        let path = text_of(payload, "path").unwrap_or_default();
+        let token = self.transfers.next_token();
+        self.send(&Message::FileListRequest { token, path }).await?;
+        Ok(json!({ "ok": true, "token": token }))
+    }
+
+    /// Ask the other end for a file.
+    async fn download_file(&mut self, payload: &Value) -> Result<Value> {
+        let path = text_of(payload, "path").unwrap_or_default();
+        if path.trim().is_empty() {
+            return Err(anyhow!("没有说要看哪个文件"));
+        }
+        let token = self.transfers.next_token();
+        self.send(&Message::FileRequest { token, path }).await?;
+        Ok(json!({ "ok": true, "token": token }))
+    }
+
+    /// Start sending a file to the other end.
+    async fn upload_start(&mut self, payload: &Value) -> Result<Value> {
+        let name = text_of(payload, "name").unwrap_or_default();
+        if name.trim().is_empty() {
+            return Err(anyhow!("没有说文件叫什么"));
+        }
+        let size = payload
+            .get("size")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let token = self.transfers.next_token();
+        self.transfers.begin_upload(token, &name);
+        self.send(&Message::FileUploadStart {
+            token,
+            path: name,
+            size,
+        })
+        .await?;
+        Ok(json!({ "ok": true, "token": token }))
+    }
+
+    /// Send one piece of a file that is being uploaded.
+    async fn upload_chunk(&mut self, payload: &Value) -> Result<Value> {
+        let token = payload
+            .get("token")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| anyhow!("这个分片不知道是哪一次上传的"))?;
+        let offset = payload
+            .get("offset")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let data = text_of(payload, "data").unwrap_or_default();
+        let sent = offset + (data.len() as u64 / 4 * 3);
+        self.send(&Message::FileUploadChunk {
+            token,
+            offset,
+            data,
+        })
+        .await?;
+        self.emit(
+            "uploadProgress",
+            json!({ "token": token, "sent": sent, "size": sent }),
+        );
+        Ok(json!({ "ok": true }))
+    }
+
+    /// The file is sent.
+    async fn upload_end(&mut self, payload: &Value) -> Result<Value> {
+        let token = payload
+            .get("token")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| anyhow!("这一次上传没有编号"))?;
+        let name = self
+            .transfers
+            .finish_upload(token)
+            .unwrap_or_else(|| "file".to_string());
+        self.send(&Message::FileUploadEnd {
+            token,
+            path: name.clone(),
+        })
+        .await?;
+        self.emit("uploadDone", json!({ "token": token, "name": name }));
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Give up on a transfer.
+    fn cancel_transfer(&mut self, payload: &Value) -> Result<Value> {
+        let token = payload
+            .get("token")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        self.transfers.cancel(token);
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Put the text of this machine's clipboard on the other end's.
+    async fn send_clipboard(&mut self, payload: &Value) -> Result<Value> {
+        let text = text_of(payload, "text").unwrap_or_default();
+        self.send(&Message::Clipboard { text }).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Hide this machine's screen from the other end, or show it again.
+    ///
+    /// This is the thing to use when somebody is standing behind this
+    /// machine and should not see what is going on: the picture stops
+    /// being sent.
+    fn toggle_host_privacy(&mut self, payload: &Value) -> Result<Value> {
+        let enabled = payload
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let Some(updates) = self.host_updates.clone() else {
+            return Err(anyhow!("这台电脑没有在共享"));
+        };
+        if !updates.set_privacy(enabled) {
+            return Err(anyhow!("共享已经停了"));
+        }
+        Ok(json!({ "ok": true, "enabled": enabled }))
+    }
+
+    /// Hide the picture of the other end, or show it again.
+    async fn toggle_privacy(&mut self, payload: &Value) -> Result<Value> {
+        let enabled = payload
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        self.send(&Message::PrivacyScreen { enabled }).await?;
+        Ok(json!({ "ok": true, "enabled": enabled }))
+    }
+
+    /// Ask the other end to shut down, restart, sleep or log off.
+    async fn power_action(&mut self, payload: &Value) -> Result<Value> {
+        let action = text_of(payload, "action").unwrap_or_default();
+        let Some(wanted) = skycremote_core::power::PowerAction::parse(&action) else {
+            return Err(anyhow!("看不懂要做什么"));
+        };
+        self.send(&Message::Power {
+            action: wanted.as_wire_word().to_string(),
+        })
+        .await?;
         Ok(json!({ "ok": true }))
     }
 
@@ -1139,10 +1625,11 @@ impl Backend {
     // MARK: - Small helpers
 
     /// The way out to the other end, if there is one.
-    fn sender(&self) -> Result<&transport::Sender> {
+    fn sender(&self) -> Result<transport::Sender> {
         self.session
-            .as_ref()
-            .map(|session| &session.sender)
+            .lock()
+            .ok()
+            .and_then(|session| session.as_ref().map(|session| session.sender.clone()))
             .ok_or_else(|| anyhow!("there is no session"))
     }
 
@@ -1157,6 +1644,26 @@ impl Backend {
             .send_control(bytes::Bytes::from(text))
             .await
             .context("the message could not be sent")
+    }
+
+    /// Whether there is a session.
+    fn has_session(&self) -> bool {
+        self.session
+            .lock()
+            .map(|session| session.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Put a session in place, or take the one that is there away.
+    fn set_session(&self, session: Option<Session>) {
+        if let Ok(mut slot) = self.session.lock() {
+            *slot = session;
+        }
+    }
+
+    /// Take the session away.
+    fn take_session(&self) -> Option<Session> {
+        self.session.lock().ok().and_then(|mut slot| slot.take())
     }
 
     /// Answer a command.
@@ -1270,6 +1777,43 @@ fn lan_address() -> Option<std::net::IpAddr> {
         other.get_or_insert(std::net::IpAddr::V4(address));
     }
     other
+}
+
+/// Where a file that was sent over is put on this machine.
+///
+/// It is a folder of its own under the home folder, so that the files
+/// that came in are easy to find.
+fn download_path(name: &str) -> std::path::PathBuf {
+    let safe: String = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("file")
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric()
+                || character == '.'
+                || character == '-'
+                || character == '_'
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if safe.trim().is_empty() {
+        "file".to_string()
+    } else {
+        safe
+    };
+    let folder = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Downloads")
+        .join("SkycRemote");
+    let _ = std::fs::create_dir_all(&folder);
+    folder.join(safe)
 }
 
 /// The time of the day, in milliseconds since the epoch.

@@ -34,24 +34,101 @@ pub enum Message {
         /// One entry per screen.
         screens: Vec<ScreenInfo>,
     },
-    /// The file transfer starts.
-    FileStart {
-        /// The name on the sending side.
-        name: String,
-        /// The size in bytes.
+    /// The control end asks what is in a folder of the controlled machine.
+    FileListRequest {
+        /// Which request this is, so the answer can be paired with it.
+        token: u64,
+        /// The folder to list.  An empty path means the home folder.
+        path: String,
+    },
+    /// The list of a folder on the machine that is being controlled.
+    FileList {
+        /// The request this answers.
+        token: u64,
+        /// The folder that was listed.
+        path: String,
+        /// What is in it.
+        entries: Vec<FileEntry>,
+    },
+    /// The control end asks for a file.
+    FileRequest {
+        /// Which request this is, so the answer can be paired with it.
+        token: u64,
+        /// The file to send, on the machine that is being controlled.
+        path: String,
+    },
+    /// The control end is about to send a file.
+    FileUploadStart {
+        /// Which transfer this is.
+        token: u64,
+        /// The name the file should have on the controlled machine.
+        path: String,
+        /// How many bytes are coming.
         size: u64,
-        /// Whether this is a whole file or a folder that is being walked.
-        is_dir: bool,
     },
-    /// One chunk of a file.  The offset is where it belongs in the file.
-    FileChunk {
-        /// Where the chunk starts in the file.
+    /// One piece of an uploaded file.
+    FileUploadChunk {
+        /// Which transfer this is.
+        token: u64,
+        /// Where the piece starts in the file.
         offset: u64,
-        /// The bytes.
-        data: Vec<u8>,
+        /// The bytes, in base64.
+        data: String,
     },
-    /// The file is complete.
-    FileEnd,
+    /// The uploaded file is complete.
+    FileUploadEnd {
+        /// Which transfer this is.
+        token: u64,
+        /// The name of the file that was sent.
+        path: String,
+    },
+    /// The controlled end is about to send a file.
+    FileDownloadStart {
+        /// Which transfer this is.
+        token: u64,
+        /// The file being sent.
+        path: String,
+        /// How many bytes are coming.
+        size: u64,
+    },
+    /// One piece of a downloaded file.
+    FileDownloadChunk {
+        /// Which transfer this is.
+        token: u64,
+        /// Where the piece starts in the file.
+        offset: u64,
+        /// The bytes, in base64.
+        data: String,
+    },
+    /// The downloaded file is complete.
+    FileDownloadEnd {
+        /// Which transfer this is.
+        token: u64,
+        /// The file that was sent.
+        path: String,
+    },
+    /// The clipboard changed on one side and is being sent to the other.
+    Clipboard {
+        /// The text that is on the clipboard.
+        text: String,
+    },
+    /// The privacy screen is on or off.
+    PrivacyScreen {
+        /// Whether the screen is hidden.
+        enabled: bool,
+    },
+    /// The machine is being asked to do something to itself.
+    Power {
+        /// What to do: shutdown, restart, sleep or logoff.
+        action: String,
+    },
+    /// The other end could not do what was asked.
+    FileError {
+        /// Which transfer this is about.
+        token: u64,
+        /// What went wrong, in words.
+        message: String,
+    },
     /// A line of the remote terminal.
     Terminal {
         /// The bytes of one line.
@@ -127,6 +204,17 @@ pub struct AuthResult {
     pub allowed: bool,
     /// Why it was refused, when it was.
     pub reason: String,
+}
+
+/// One thing in a folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// The name of the thing.
+    pub name: String,
+    /// Whether it is a folder.
+    pub is_dir: bool,
+    /// How many bytes it holds, when it is a file.
+    pub size: u64,
 }
 
 /// One screen of the machine that is being controlled.
