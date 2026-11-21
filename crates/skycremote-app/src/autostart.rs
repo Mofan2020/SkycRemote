@@ -181,6 +181,10 @@ mod platform {
     ///
     /// The test uses this so that it does not touch the real place.
     pub fn set_at(path: PathBuf, enabled: bool) -> AutostartReport {
+        // Windows only makes a shortcut when the file is called .lnk.
+        // The name is put right here, so that a path given from
+        // somewhere else still works.
+        let path = with_shortcut_name(path);
         if !enabled {
             let _ = std::fs::remove_file(&path);
             return AutostartReport::off("开机自启已经关了".to_string());
@@ -217,6 +221,19 @@ $s.Save()
             )),
             Err(error) => AutostartReport::off(format!("没能写下来：{error}")),
         }
+    }
+
+    /// Make sure the name of the file ends with .lnk.
+    fn with_shortcut_name(path: PathBuf) -> PathBuf {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.to_lowercase().ends_with(".lnk") {
+            return path;
+        }
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{name}.lnk"))
     }
 
     pub fn is_enabled() -> bool {
@@ -326,7 +343,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).expect("the folder must be made");
-        let path = folder.join("the-file");
+        // The name ends with .lnk on purpose: Windows only makes a
+        // shortcut when the file is called that.
+        let path = folder.join("the-file.lnk");
 
         let report = set_at(path.clone(), true);
         assert!(report.enabled, "the setting must be on: {}", report.message);
@@ -335,7 +354,10 @@ mod tests {
             "the place that was written must be said: {}",
             report.message
         );
-        assert!(path.exists(), "the file must be there");
+        let written = report
+            .path
+            .expect("the place that was written must be said");
+        assert!(written.exists(), "the file must be there");
 
         let report = set_at(path.clone(), false);
         assert!(
@@ -343,7 +365,7 @@ mod tests {
             "the setting must be off: {}",
             report.message
         );
-        assert!(!path.exists(), "the file must be gone again");
+        assert!(!written.exists(), "the file must be gone again");
 
         let _ = std::fs::remove_dir_all(&folder);
     }
