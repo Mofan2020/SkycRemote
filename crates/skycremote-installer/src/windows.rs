@@ -287,10 +287,10 @@ fn read_string(key: HKEY, name: &str) -> Result<String, String> {
     if status != WIN32_ERROR(0) {
         return Err(format!("the value {name} could not be read: {}", status.0));
     }
-    let words: Vec<u16> = buffer[..read as usize]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+    // The value is a string of two-byte characters, the way Windows
+    // stores text.
+    let (pairs, _) = buffer[..read as usize].as_chunks::<2>();
+    let words: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
     let text = String::from_utf16_lossy(&words);
     Ok(text.trim_end_matches(' ').to_string())
 }

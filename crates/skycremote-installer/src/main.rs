@@ -215,7 +215,6 @@ mod windows {
     //! The window of the installer.
 
     use std::path::PathBuf;
-    use std::sync::mpsc::TryRecvError;
     use std::time::{Duration, Instant};
 
     use include_dir::include_dir;
@@ -288,54 +287,48 @@ mod windows {
                 return;
             }
 
-            loop {
-                match command_rx.try_recv() {
-                    Ok((id, command, payload)) => {
-                        let value = match command.as_str() {
-                            "install" => {
-                                let path = serde_json::from_str::<serde_json::Value>(&payload)
-                                    .ok()
-                                    .and_then(|value| {
-                                        value.get("path").and_then(|v| v.as_str()).map(String::from)
-                                    })
-                                    .unwrap_or_default();
-                                let dir = PathBuf::from(path.trim());
-                                if dir.as_os_str().is_empty() {
-                                    serde_json::json!({ "ok": false, "message": "没有安装位置" })
-                                } else {
-                                    match super::install_to(&dir) {
-                                        Ok(where_to) => serde_json::json!({
-                                            "ok": true,
-                                            "path": where_to,
-                                            "message": "安装完成"
-                                        }),
-                                        Err(error) => serde_json::json!({
-                                            "ok": false,
-                                            "message": error
-                                        }),
-                                    }
-                                }
+            while let Ok((id, command, payload)) = command_rx.try_recv() {
+                let value = match command.as_str() {
+                    "install" => {
+                        let path = serde_json::from_str::<serde_json::Value>(&payload)
+                            .ok()
+                            .and_then(|value| {
+                                value.get("path").and_then(|v| v.as_str()).map(String::from)
+                            })
+                            .unwrap_or_default();
+                        let dir = PathBuf::from(path.trim());
+                        if dir.as_os_str().is_empty() {
+                            serde_json::json!({ "ok": false, "message": "没有安装位置" })
+                        } else {
+                            match super::install_to(&dir) {
+                                Ok(where_to) => serde_json::json!({
+                                    "ok": true,
+                                    "path": where_to,
+                                    "message": "安装完成"
+                                }),
+                                Err(error) => serde_json::json!({
+                                    "ok": false,
+                                    "message": error
+                                }),
                             }
-                            "defaultPath" => serde_json::json!({
-                                "ok": true,
-                                "path": super::default_install_dir().to_string_lossy(),
-                                "version": env!("CARGO_PKG_VERSION"),
-                            }),
-                            "close" => {
-                                *control_flow = ControlFlow::Exit;
-                                serde_json::json!({ "ok": true })
-                            }
-                            other => serde_json::json!({
-                                "ok": false,
-                                "message": format!("不知道的命令：{other}")
-                            }),
-                        };
-                        let script =
-                            format!("window.__skycremote_resolve__({}, {}, {})", id, true, value);
-                        let _ = webview.evaluate_script(&script);
+                        }
                     }
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                }
+                    "defaultPath" => serde_json::json!({
+                        "ok": true,
+                        "path": super::default_install_dir().to_string_lossy(),
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }),
+                    "close" => {
+                        *control_flow = ControlFlow::Exit;
+                        serde_json::json!({ "ok": true })
+                    }
+                    other => serde_json::json!({
+                        "ok": false,
+                        "message": format!("不知道的命令：{other}")
+                    }),
+                };
+                let script = format!("window.__skycremote_resolve__({}, {}, {})", id, true, value);
+                let _ = webview.evaluate_script(&script);
             }
         })
     }

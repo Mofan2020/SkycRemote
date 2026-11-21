@@ -290,26 +290,28 @@ mod imp {
             });
         };
 
-        for dir in candidate_dirs() {
-            if let Err(error) = std::fs::create_dir_all(&dir) {
-                return Err(format!("{} 建不出来：{error}", dir.display()));
-            }
-            let target = super::tool_path(&dir);
-            // The installer puts the tool where it belongs already, so
-            // there is nothing to copy when it is already there.
-            if source != target && super::copy_executable(&source, &target).is_err() {
-                return Err(format!("{} 不能写入", dir.display()));
-            }
-            crate::windows::add_to_user_path(&dir)
-                .map_err(|error| format!("PATH 没有改成：{error}"))?;
-            return Ok(CliInstall {
-                path: Some(target),
-                ok: true,
-                message: format!("命令行工具已经装到 {}", dir.display()),
-            });
+        // There is one folder to put it in: the one next to the
+        // program.  It is made here if it is not there yet.
+        let Some(dir) = candidate_dirs().into_iter().next() else {
+            return Err("找不到装命令行工具的目录".to_string());
+        };
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            return Err(format!("{} 建不出来：{error}", dir.display()));
         }
 
-        Err("命令行工具没有装上".to_string())
+        let target = super::tool_path(&dir);
+        // The installer puts the tool where it belongs already, so
+        // there is nothing to copy when it is already there.
+        if source != target && super::copy_executable(&source, &target).is_err() {
+            return Err(format!("{} 不能写入", dir.display()));
+        }
+        crate::windows::add_to_user_path(&dir)
+            .map_err(|error| format!("PATH 没有改成：{error}"))?;
+        Ok(CliInstall {
+            path: Some(target),
+            ok: true,
+            message: format!("命令行工具已经装到 {}", dir.display()),
+        })
     }
 }
 

@@ -173,6 +173,24 @@ tag push 触发。`check-version` 先看 tag 上的版本号和各个 crate 写�
 
 `release-notes.md` 就是 release 的正文。
 
+## 只在 Windows 上编的代码，要用 Windows 目标查一遍
+
+装程序那一坨代码（注册表、快捷方式、PATH）全在 `cfg(target_os = "windows")` 里。
+在 macOS 上 `cargo clippy` 根本不看这些代码，所以本地是绿的，CI 的 Windows
+runner 是红的 —— 第一次发 v0.3.0 就是这么挂的：`never_loop`、
+`chunks_exact_to_as_chunks`、`while_let_loop` 三个 lint，全在 Windows 那一侧。
+
+能本地查出来：
+
+```
+cargo clippy --target x86_64-pc-windows-msvc -p skycremote-installer --all-targets -- -D warnings
+```
+
+这个目标装了就能查，不需要 Windows 机器。只有 `ring` 那种带 C 代码的依赖
+编不过（缺 Windows 的头文件），纯 Rust 的 crate 查得了。
+
+**新写平台专属的代码，第一件事就是拿那个目标查一遍**，别等 CI 告诉你。
+
 ## 输入注入：两个「看着绿、实际打不出字」的坑
 
 这两条都只有真机探针能发现，单元测试 mock 掉 Xlib 之后永远看不到。Xvfb 上
