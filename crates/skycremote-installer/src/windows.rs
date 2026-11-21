@@ -1,14 +1,21 @@
 //! The parts of the installation that are Windows' own.
 //!
-//! Three things happen here: a folder is put on the PATH of the
-//! person, an entry is written so that the program shows up in
-//! "Apps and Features", and a shortcut is made for the Start menu.
+//! Three things happen here: a folder is put on the PATH, an entry is
+//! written so that the program shows up in "Apps and Features", and a
+//! shortcut is made for the Start menu.
 //!
-//! Everything here is written for the person who is installing, not
-//! for the whole machine: the registry key is the one of the current
-//! user.  That is why the installer does not need an administrator
-//! password, and why it cannot install for other people — which is
-//! what a program that only talks to the machine it is on should do.
+//! There are two ways to install, and they are the same steps on
+//! different keys:
+//!
+//! * **Just for me** — everything under the current user's own
+//!   account.  No password is asked for, and the program cannot be
+//!   used by other accounts on the machine.
+//! * **For everybody** — the program goes into "Program Files" and
+//!   the keys are the machine's own.  This one needs administrator
+//!   rights, so Windows asks for them, and the person says yes.
+//!
+//! Both write for the account that started the installation; the
+//! difference is whether that account is the person or the machine.
 
 use std::path::{Path, PathBuf};
 
@@ -18,42 +25,149 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ,
 };
-use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+use windows::Win32::UI::Shell::{IShellLinkW, ShellExecuteW, ShellLink};
 use windows::Win32::UI::WindowsAndMessaging::{
-    SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    MessageBoxW, SendMessageTimeoutW, HWND_BROADCAST, MB_OK, SMTO_ABORTIFHUNG, SW_SHOWNORMAL,
+    WM_SETTINGCHANGE,
 };
 
-/// The key of the current user that holds the environment.
-const ENVIRONMENT_KEY: &str = "Environment";
+/// Who the installation is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Just the person who is running the installer.
+    User,
+    /// Everybody who uses this machine.
+    AllUsers,
+}
 
-/// The key under which the program is listed in "Apps and Features".
-const UNINSTALL_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SkycRemote";
+impl Scope {
+    /// The name to show in the interface.
+    pub fn label(self) -> &'static str {
+        match self {
+            Scope::User => "只为我安装",
+            Scope::AllUsers => "为所有用户安装",
+        }
+    }
+
+    /// The key the things are written under.
+    fn root(self) -> HKEY {
+        match self {
+            Scope::User => HKEY_CURRENT_USER,
+            Scope::AllUsers => HKEY_LOCAL_MACHINE,
+        }
+    }
+
+    /// The key that holds the PATH.
+    ///
+    /// For one person it is in their own account; for everybody it is
+    /// the machine's own environment, which is where a program that
+    /// everybody uses belongs.
+    fn environment_key(self) -> &'static str {
+        match self {
+            Scope::User => "Environment",
+            Scope::AllUsers => {
+                "SYSTEM\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Environment"
+            }
+        }
+    }
+
+    /// The key under which the program is listed in "Apps and Features".
+    fn uninstall_key(self) -> &'static str {
+        "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\SkycRemote"
+    }
+}
 
 /// A wide string with a zero at the end, which is what Windows wants.
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// The PATH of the current user, as it is written down.
-pub fn user_path() -> Result<String, String> {
-    let key = open_environment()?;
+/// Whether this program is running with administrator rights.
+///
+/// The test is the one that matters in practice: can it write the
+/// machine's own keys?  A person who is an administrator but did not
+/// say yes to the prompt cannot, and that is exactly the case where
+/// the prompt has to be shown again.
+pub fn is_elevated() -> bool {
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(
+                wide("SYSTEM\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Environment")
+                    .as_ptr(),
+            ),
+            None,
+            KEY_WRITE,
+            &mut key,
+        )
+    };
+    if status != WIN32_ERROR(0) {
+        return false;
+    }
+    let _ = unsafe { RegCloseKey(key) };
+    true
+}
+
+/// Start this program again with administrator rights.
+///
+/// Windows shows its own prompt for this.  The person says yes, and
+/// the program that comes back can write the machine's keys.
+pub fn relaunch_elevated(arguments: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let exe = wide(&exe.to_string_lossy());
+    let verb = wide("runas");
+    let parameters = wide(arguments);
+    unsafe {
+        let result = ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(exe.as_ptr()),
+            PCWSTR(parameters.as_ptr()),
+            None,
+            SW_SHOWNORMAL,
+        );
+        // A result below 32 is the error code; anything bigger is a
+        // handle to the program that was started.
+        if (result.0 as isize) <= 32 {
+            return Err("没有拿到管理员权限".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Say something in a window of the system's own.
+///
+/// It is used when there is no interface to say it in — the elevated
+/// run has no window of its own.
+pub fn say(text: &str, caption: &str) {
+    let text = wide(text);
+    let caption = wide(caption);
+    unsafe {
+        let _ = MessageBoxW(None, PCWSTR(text.as_ptr()), PCWSTR(caption.as_ptr()), MB_OK);
+    }
+}
+
+/// The PATH of the given scope, as it is written down.
+pub fn path_of(scope: Scope) -> Result<String, String> {
+    let key = open_key(scope.root(), scope.environment_key())?;
     let result = read_string(key, "Path");
     let _ = unsafe { RegCloseKey(key) };
     result
 }
 
-/// Put a folder on the PATH of the current user.
+/// Put a folder on the PATH.
 ///
 /// The PATH is read, the folder is added at the end if it is not
 /// already there, and it is written back.  The programs that are
 /// already running are told about it, so that a terminal that is
 /// already open sees the new PATH too.
-pub fn add_to_user_path(dir: &Path) -> Result<(), String> {
+pub fn add_to_path(scope: Scope, dir: &Path) -> Result<(), String> {
     let wanted = dir.to_string_lossy().to_string();
-    let key = open_environment()?;
+    let key = open_key(scope.root(), scope.environment_key())?;
     let current = read_string(key, "Path").unwrap_or_default();
     let mut value = current.clone();
 
@@ -73,13 +187,13 @@ pub fn add_to_user_path(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Take a folder off the PATH of the current user.
+/// Take a folder off the PATH.
 ///
 /// It is used when the program is uninstalled: a folder that is not
 /// there any more must not stay on the PATH.
-pub fn remove_from_user_path(dir: &Path) -> Result<(), String> {
+pub fn remove_from_path(scope: Scope, dir: &Path) -> Result<(), String> {
     let wanted = dir.to_string_lossy().to_string();
-    let key = open_environment()?;
+    let key = open_key(scope.root(), scope.environment_key())?;
     let current = read_string(key, "Path").unwrap_or_default();
     let kept: Vec<&str> = current
         .split(';')
@@ -95,10 +209,26 @@ pub fn remove_from_user_path(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a folder is on the PATH of the given scope.
+pub fn is_on_path(scope: Scope, dir: &Path) -> bool {
+    let wanted = dir.to_string_lossy().to_string();
+    match path_of(scope) {
+        Ok(current) => current
+            .split(';')
+            .map(|part| part.trim().trim_matches('"'))
+            .any(|part| part.eq_ignore_ascii_case(&wanted)),
+        Err(_) => false,
+    }
+}
+
 /// Write the entry that makes the program show up in "Apps and
 /// Features", with the program that takes it away again.
-pub fn write_uninstall_entry(install_dir: &Path, uninstaller: &Path) -> Result<(), String> {
-    let key = create_key(UNINSTALL_KEY)?;
+pub fn write_uninstall_entry(
+    scope: Scope,
+    install_dir: &Path,
+    uninstaller: &Path,
+) -> Result<(), String> {
+    let key = create_key(scope.root(), scope.uninstall_key())?;
     let write =
         |name: &str, value: &str| -> Result<(), String> { write_string(key, name, value, REG_SZ) };
     write("DisplayName", "SkycRemote")?;
@@ -118,14 +248,28 @@ pub fn write_uninstall_entry(install_dir: &Path, uninstaller: &Path) -> Result<(
 }
 
 /// Take the entry out of "Apps and Features".
-pub fn remove_uninstall_entry() -> Result<(), String> {
+pub fn remove_uninstall_entry(scope: Scope) -> Result<(), String> {
     unsafe {
-        let status = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR(wide(UNINSTALL_KEY).as_ptr()));
+        let status = RegDeleteKeyW(scope.root(), PCWSTR(wide(scope.uninstall_key()).as_ptr()));
         if status != WIN32_ERROR(0) {
             return Err(format!("the entry could not be taken away: {}", status.0));
         }
     }
     Ok(())
+}
+
+/// Where the program was installed, as the entry in "Apps and
+/// Features" says.
+pub fn install_location(scope: Scope) -> Option<PathBuf> {
+    let key = open_key(scope.root(), scope.uninstall_key()).ok()?;
+    let result = read_string(key, "InstallLocation").ok();
+    let _ = unsafe { RegCloseKey(key) };
+    let text = result?;
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(text))
+    }
 }
 
 /// Make a shortcut that points at a program.
@@ -184,62 +328,31 @@ pub fn shortcut_folders() -> Vec<PathBuf> {
     folders
 }
 
-/// Where the program was installed, as the entry in "Apps and
-/// Features" says.
-pub fn install_location() -> Option<PathBuf> {
-    let key = open_key(UNINSTALL_KEY).ok()?;
-    let result = read_string(key, "InstallLocation").ok();
-    let _ = unsafe { RegCloseKey(key) };
-    let text = result?;
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(text))
-    }
-}
-
-/// Open a key of the current user, or make it when it is not there.
-fn open_key(path: &str) -> Result<HKEY, String> {
+/// Open a key of the given root, or make it when it is not there.
+fn open_key(root: HKEY, path: &str) -> Result<HKEY, String> {
     let mut key = HKEY::default();
     let status = unsafe {
         RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            root,
             PCWSTR(wide(path).as_ptr()),
-            None,
-            KEY_READ,
-            &mut key,
-        )
-    };
-    if status != WIN32_ERROR(0) {
-        return Err(format!("the key could not be opened: {}", status.0));
-    }
-    Ok(key)
-}
-
-/// Open the key of the current user that holds the environment.
-fn open_environment() -> Result<HKEY, String> {
-    let mut key = HKEY::default();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(wide(ENVIRONMENT_KEY).as_ptr()),
             None,
             KEY_READ | KEY_WRITE,
             &mut key,
         )
     };
     if status != WIN32_ERROR(0) {
-        return Err(format!("the environment could not be opened: {}", status.0));
+        // The key may not be there yet; try to make it.
+        return create_key(root, path);
     }
     Ok(key)
 }
 
 /// Make a key, or open it when it is already there.
-fn create_key(path: &str) -> Result<HKEY, String> {
+fn create_key(root: HKEY, path: &str) -> Result<HKEY, String> {
     let mut key = HKEY::default();
     let status = unsafe {
         RegCreateKeyExW(
-            HKEY_CURRENT_USER,
+            root,
             PCWSTR(wide(path).as_ptr()),
             None,
             PCWSTR::null(),
@@ -292,7 +405,7 @@ fn read_string(key: HKEY, name: &str) -> Result<String, String> {
     let (pairs, _) = buffer[..read as usize].as_chunks::<2>();
     let words: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
     let text = String::from_utf16_lossy(&words);
-    Ok(text.trim_end_matches(' ').to_string())
+    Ok(text.trim_end_matches('\u{0}').to_string())
 }
 
 /// Write a string into a key.
@@ -319,18 +432,6 @@ fn write_string(
     Ok(())
 }
 
-/// Take a value out of a key.
-fn delete_value(key: HKEY, name: &str) -> Result<(), String> {
-    let status = unsafe { RegDeleteValueW(key, PCWSTR(wide(name).as_ptr())) };
-    if status != WIN32_ERROR(0) {
-        return Err(format!(
-            "the value {name} could not be taken away: {}",
-            status.0
-        ));
-    }
-    Ok(())
-}
-
 /// Tell the programs that are running that the PATH has changed.
 ///
 /// Without this, a terminal window that is already open keeps the old
@@ -348,14 +449,4 @@ fn broadcast_path_change() {
             None,
         );
     }
-}
-
-/// Remove the value of the given name from the environment key.
-///
-/// It is used when the program is uninstalled.
-pub fn remove_from_environment(name: &str) -> Result<(), String> {
-    let key = open_environment()?;
-    let result = delete_value(key, name);
-    let _ = unsafe { RegCloseKey(key) };
-    result
 }

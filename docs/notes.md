@@ -173,6 +173,38 @@ tag push 触发。`check-version` 先看 tag 上的版本号和各个 crate 写�
 
 `release-notes.md` 就是 release 的正文。
 
+## webview 是窗口的孩子，得有人告诉它多大
+
+wry 的 `build_as_child` 不传尺寸的时候，webview 是 **200 × 200** —— 它就诞生在
+那个尺寸上。窗口是 1280 × 820，于是页面缩在左上角一小块里，剩下的全是空的。
+看起来像「界面只显示了一角」，其实是两件事：webview 没长大，而且窗口一变
+尺寸它也不跟着变。
+
+所以有两步，缺一不可：
+
+```rust
+let scale_factor = window.scale_factor();
+let inner_size = window.inner_size().to_logical::<f64>(scale_factor);
+let builder = WebViewBuilder::new().with_bounds(wry::Rect {
+    position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
+    size: inner_size.into(),
+});
+```
+
+以及在事件循环里，窗口每次改变大小都要重新告诉它：
+
+```rust
+if let Event::WindowEvent { event: WindowEvent::Resized(size), .. } = event {
+    let size = size.to_logical::<f64>(scale_factor);
+    let _ = webview.set_bounds(wry::Rect {
+        position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
+        size: size.into(),
+    });
+}
+```
+
+主程序和安装程序都用了 `build_as_child`，所以两处都得写。
+
 ## 只在 Windows 上编的代码，要用 Windows 目标查一遍
 
 装程序那一坨代码（注册表、快捷方式、PATH）全在 `cfg(target_os = "windows")` 里。

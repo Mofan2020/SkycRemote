@@ -305,13 +305,32 @@ mod imp {
         if source != target && super::copy_executable(&source, &target).is_err() {
             return Err(format!("{} 不能写入", dir.display()));
         }
-        crate::windows::add_to_user_path(&dir)
-            .map_err(|error| format!("PATH 没有改成：{error}"))?;
-        Ok(CliInstall {
-            path: Some(target),
-            ok: true,
-            message: format!("命令行工具已经装到 {}", dir.display()),
-        })
+        // The folder goes on the PATH of the person.  When the program
+        // was installed for everybody, the installer already put it on
+        // the machine's PATH, and this program has no administrator
+        // rights to write there — so it only checks whether it is
+        // already there.
+        match crate::windows::add_to_path(crate::windows::Scope::User, &dir) {
+            Ok(()) => Ok(CliInstall {
+                path: Some(target),
+                ok: true,
+                message: format!("命令行工具已经装到 {}", dir.display()),
+            }),
+            Err(error) => {
+                if crate::windows::is_on_path(crate::windows::Scope::AllUsers, &dir) {
+                    Ok(CliInstall {
+                        path: Some(target),
+                        ok: true,
+                        message: format!(
+                            "命令行工具已经在 {}，机器上的每个账户都能用",
+                            dir.display()
+                        ),
+                    })
+                } else {
+                    Err(format!("PATH 没有改成：{error}"))
+                }
+            }
+        }
     }
 }
 

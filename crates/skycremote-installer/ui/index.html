@@ -17,9 +17,29 @@
   </header>
 
   <section class="field">
+    <span class="field-label">装给谁</span>
+    <div class="choices">
+      <label class="choice">
+        <input type="radio" name="scope" value="user" checked>
+        <span class="choice-text">
+          <span class="choice-title">只为我安装</span>
+          <span class="choice-hint">装在你自己的账户下，不需要管理员密码。</span>
+        </span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="scope" value="allUsers">
+        <span class="choice-text">
+          <span class="choice-title">为所有用户安装</span>
+          <span class="choice-hint">装进「Program Files」，这台机器上的每个账户都能用。Windows 会问你要管理员权限。</span>
+        </span>
+      </label>
+    </div>
+  </section>
+
+  <section class="field">
     <label for="path">安装位置</label>
     <input id="path" type="text" spellcheck="false" autocomplete="off">
-    <p class="hint">装在你自己的账户下，不需要管理员密码。</p>
+    <p class="hint" id="path-hint">装在你自己的账户下，不需要管理员密码。</p>
   </section>
 
   <section class="list">
@@ -78,8 +98,39 @@
     status.hidden = false;
   }
 
+  var defaults = { user: '', allUsers: '' };
+  var scopeInputs = document.querySelectorAll('input[name="scope"]');
+
+  function chosenScope() {
+    for (var i = 0; i < scopeInputs.length; i++) {
+      if (scopeInputs[i].checked) return scopeInputs[i].value;
+    }
+    return 'user';
+  }
+
+  // The path follows the choice: one person installs into their own
+  // area, everybody installs into "Program Files".
+  function applyScope(keepTyped) {
+    var scope = chosenScope();
+    if (!keepTyped) pathInput.value = defaults[scope] || '';
+    var hint = document.getElementById('path-hint');
+    if (hint) {
+      hint.textContent = scope === 'allUsers'
+        ? '装进 Program Files，这台机器上的每个账户都能用。Windows 会问你要管理员权限。'
+        : '装在你自己的账户下，不需要管理员密码。';
+    }
+  }
+
+  Array.prototype.forEach.call(scopeInputs, function (input) {
+    input.addEventListener('change', function () {
+      applyScope(false);
+    });
+  });
+
   request('defaultPath').then(function (result) {
-    if (result && result.path) pathInput.value = result.path;
+    if (result && result.user) defaults.user = result.user;
+    if (result && result.allUsers) defaults.allUsers = result.allUsers;
+    applyScope(false);
     if (result && result.version) {
       document.getElementById('version').textContent = '点对点远程桌面 · v' + result.version;
     }
@@ -95,11 +146,16 @@
     installButton.textContent = '安装中…';
     say('正在安装…', 'info');
 
-    request('install', { path: path }).then(function (result) {
+    var scope = chosenScope();
+    request('install', { path: path, scope: scope }).then(function (result) {
       if (result && result.ok) {
         installButton.textContent = '安装完成';
         cancelButton.textContent = '完成';
-        say('装好了：' + result.path + '。命令行工具叫 skycremote，在终端里直接用。', 'ok');
+        if (scope === 'allUsers') {
+          say(result.message || '装好了。命令行工具叫 skycremote，每个账户都能用。', 'ok');
+        } else {
+          say('装好了：' + result.path + '。命令行工具叫 skycremote，在终端里直接用。', 'ok');
+        }
       } else {
         installButton.disabled = false;
         installButton.textContent = '安装';

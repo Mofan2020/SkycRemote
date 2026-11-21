@@ -216,7 +216,19 @@ pub fn run(options: Options) -> Result<()> {
     let page_loaded = Arc::new(AtomicBool::new(false));
     let loaded_flag = Arc::clone(&page_loaded);
 
+    // The interface is a child of the window, and a child has to be
+    // told how big it is.  Without this the webview keeps the size it
+    // was born with — 200 by 200 — and the page sits in the corner of
+    // a big window with the rest of it empty.  So it is told the size
+    // of the window now, and again every time the window is resized.
+    let scale_factor = window.scale_factor();
+    let inner_size = window.inner_size().to_logical::<f64>(scale_factor);
+
     let builder = WebViewBuilder::new()
+        .with_bounds(wry::Rect {
+            position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
+            size: inner_size.into(),
+        })
         .with_initialization_script(bootstrap(
             options.connect_to.as_deref(),
             options.tracker.as_deref(),
@@ -266,6 +278,20 @@ pub fn run(options: Options) -> Result<()> {
             eprintln!("PROBE: 頁面已加載，開始自檢");
             let _ = webview
                 .evaluate_script("window.__SKYCREMOTE_NATIVE__.request('listScreens', '{}')");
+        }
+
+        // The window changed size: the page has to be told, or it
+        // stays at the size it had.
+        if let Event::WindowEvent {
+            event: WindowEvent::Resized(size),
+            ..
+        } = event
+        {
+            let size = size.to_logical::<f64>(scale_factor);
+            let _ = webview.set_bounds(wry::Rect {
+                position: tao::dpi::LogicalPosition::new(0.0, 0.0).into(),
+                size: size.into(),
+            });
         }
 
         if let Event::WindowEvent {
