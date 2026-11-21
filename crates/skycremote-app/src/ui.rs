@@ -392,23 +392,34 @@ pub fn run(options: Options) -> Result<()> {
             ..
         } = event
         {
+            // On Linux there is no icon in the corner, so there is no
+            // way back: closing the window stops the program, the way
+            // it always did.
+            #[cfg(target_os = "linux")]
+            {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+
             // Closing the window is not stopping the program: the
             // share keeps running, and so does the tracker.  The icon
             // in the corner is the way back.
-            window.set_visible(false);
-            // The Dock icon would be a trap: clicking it does
-            // nothing at all, so it is taken away and the icon in
-            // the menu bar is the way back.
-            #[cfg(target_os = "macos")]
-            hide_from_dock(_target);
             #[cfg(not(target_os = "linux"))]
-            if let Some(tray) = tray.as_ref() {
-                tray.set_background_note(true);
+            {
+                window.set_visible(false);
+                // The Dock icon would be a trap: clicking it does
+                // nothing at all, so it is taken away and the icon in
+                // the menu bar is the way back.
+                #[cfg(target_os = "macos")]
+                hide_from_dock(_target);
+                if let Some(tray) = tray.as_ref() {
+                    tray.set_background_note(true);
+                }
+                let _ = window_tx.send(Out::Event {
+                    name: "window".to_string(),
+                    payload: serde_json::json!({ "state": "hidden" }),
+                });
             }
-            let _ = window_tx.send(Out::Event {
-                name: "window".to_string(),
-                payload: serde_json::json!({ "state": "hidden" }),
-            });
             return;
         }
 

@@ -45,7 +45,7 @@ impl Tray {
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&quit);
 
-        let mut builder = TrayIconBuilder::new()
+        let builder = TrayIconBuilder::new()
             .with_icon(bolt())
             .with_menu(Box::new(menu))
             .with_tooltip("SkycRemote")
@@ -54,9 +54,7 @@ impl Tray {
         // is invisible in the dark mode.  The way of saying that only
         // exists on macOS.
         #[cfg(target_os = "macos")]
-        {
-            builder = builder.with_icon_templated(bolt());
-        }
+        let builder = builder.with_icon_templated(bolt());
         let icon = builder.build().ok()?;
 
         Some(Tray {
