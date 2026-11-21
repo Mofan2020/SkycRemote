@@ -467,7 +467,10 @@ pub struct Backend {
     /// The file transfers that are going on.
     transfers: Arc<TransferState>,
     /// The signal that stops the session task when the person hangs up.
-    session_cancel: Arc<tokio_util::sync::CancellationToken>,
+    ///
+    /// A new one is made for every connection: a signal that was
+    /// cancelled once would stop the next session as well.
+    session_cancel: Arc<Mutex<tokio_util::sync::CancellationToken>>,
     /// The signal that stops the share, when this machine is sharing.
     host: Option<tokio_util::sync::CancellationToken>,
     /// How to change the settings of the share that is running.
@@ -497,7 +500,7 @@ impl Backend {
             settings,
             session: Arc::new(Mutex::new(None)),
             transfers: Arc::new(TransferState::default()),
-            session_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            session_cancel: Arc::new(Mutex::new(tokio_util::sync::CancellationToken::new())),
             host: None,
             host_updates: None,
             tracker_cancel: None,
@@ -719,6 +722,13 @@ impl Backend {
             }),
         );
 
+        // Every connection gets its own signal, so that hanging up on
+        // one does not stop the next.
+        let fresh = tokio_util::sync::CancellationToken::new();
+        if let Ok(mut slot) = self.session_cancel.lock() {
+            *slot = fresh;
+        }
+
         // The other end talks back on its own: the list of screens, the
         // pictures, and the messages of the person on the other side.
         // When the line goes down, this task tries to make it again.
@@ -733,7 +743,9 @@ impl Backend {
 
     /// Hang up.
     fn disconnect(&mut self) -> Result<Value> {
-        self.session_cancel.cancel();
+        if let Ok(slot) = self.session_cancel.lock() {
+            slot.cancel();
+        }
         let had = self.take_session();
         if let Some(session) = had {
             session.sender.close();
@@ -890,7 +902,11 @@ impl Backend {
         let out = self.out.clone();
         let logs = Arc::clone(&self.logs);
         let session = self.session.clone();
-        let cancel = self.session_cancel.clone();
+        let cancel = self
+            .session_cancel
+            .lock()
+            .map(|token| token.clone())
+            .unwrap_or_else(|_| tokio_util::sync::CancellationToken::new());
         let downloads: Arc<Mutex<HashMap<u64, IncomingFile>>> =
             Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(async move {
@@ -935,6 +951,12 @@ impl Backend {
                     match Self::open_session(&tracker, &device_id, &access_code, &identity).await {
                         Ok((sender, new_receiver, verify_code)) => {
                             if let Ok(mut slot) = session.lock() {
+                                // The old connection is closed before it
+                                // is let go of, so that it does not stay
+                                // open in the background.
+                                if let Some(old) = slot.take() {
+                                    old.sender.close();
+                                }
                                 *slot = Some(Session { sender });
                             }
                             log_to(
