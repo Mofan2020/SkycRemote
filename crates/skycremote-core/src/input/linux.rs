@@ -347,20 +347,17 @@ impl LinuxInjector {
 
     /// 借用一个空键位来按一个键符。
     ///
-    /// 借出去之后不马上还：松开的时候那个键符还得在，否则系统看到的是
-    /// 「按下一个键，又松开一个别的键」。
+    /// 借出去之后不还，一直到这个注入器被丢掉的时候才还（见 `Drop`）。
+    /// X 的 KeyPress 只带 keycode，字符是客户端在处理事件的那一刻才去
+    /// 查键位表查出来的；按完就还原，正常节奏的客户端读到的都是空键符，
+    /// 事件到了、字一个也出不来。所以借用期间键位表就这么留着，反正那
+    /// 是一个没有物理键的空键位。
     fn post_with_borrowed_key(&mut self, symbol: KeySym, down: bool) -> Result<(), InputError> {
         let spare = self.spare_key()?;
         let mut borrowed = spare.keysyms.clone();
         borrowed[0] = symbol;
         self.set_keysyms(spare.keycode, spare.per_keycode, &borrowed)?;
-        let result = self.fake_key(spare.keycode, down);
-        if !down {
-            // The key is up again, so the borrowed key goes back to
-            // what it was.
-            let _ = self.set_keysyms(spare.keycode, spare.per_keycode, &spare.keysyms);
-        }
-        result
+        self.fake_key(spare.keycode, down)
     }
 
     /// 送一段字符过去。
@@ -571,6 +568,13 @@ impl Injector for LinuxInjector {
 #[cfg(target_os = "linux")]
 impl Drop for LinuxInjector {
     fn drop(&mut self) {
+        // The borrowed key goes back now and not a moment sooner: a
+        // client looks the character up when it handles the event, so
+        // giving it back earlier would leave the character in the
+        // mapping for nobody.
+        if let Some(spare) = &self.spare {
+            let _ = self.set_keysyms(spare.keycode, spare.per_keycode, &spare.keysyms);
+        }
         unsafe {
             (self.xlib.XCloseDisplay)(self.display);
         }
@@ -739,6 +743,48 @@ mod tests {
         assert!(
             body.contains("actual != wanted"),
             "the read-back has to be compared with what was written"
+        );
+    }
+
+    #[test]
+    fn a_borrowed_key_is_given_back_only_when_the_session_ends() {
+        // X 的 KeyPress 只带 keycode，字符是客户端在处理事件那一刻才去
+        // 查键位表查出来的。按完就还原的话，正常节奏的客户端读到的都是
+        // 空键符 —— 事件到了，字一个也出不来。所以借用期间不许还，
+        // 还的那一处只准出现在 Drop 里。
+        let source = include_str!("linux.rs");
+        let borrow_start = source
+            .find("fn post_with_borrowed_key")
+            .expect("the borrowing function is here");
+        let rest = &source[borrow_start..];
+        let borrow_end = rest.find("fn post_text").expect("post_text follows it");
+        let borrow = &rest[..borrow_end];
+
+        assert_eq!(
+            borrow.matches("set_keysyms").count(),
+            1,
+            "the borrowing function writes the mapping exactly once"
+        );
+        assert_eq!(
+            borrow.matches("&spare.keysyms").count(),
+            0,
+            "a borrowed key must not be given back while the session runs"
+        );
+        assert!(
+            borrow.contains("fake_key"),
+            "the borrowing function is the one that presses the key"
+        );
+
+        let drop_start = source
+            .find("impl Drop for LinuxInjector")
+            .expect("the injector is dropped somewhere");
+        let drop_rest = &source[drop_start..];
+        let drop_end = drop_rest.find("\n}\n").expect("the impl ends");
+        let drop_body = &drop_rest[..drop_end];
+        assert_eq!(
+            drop_body.matches("&spare.keysyms").count(),
+            1,
+            "the borrowed key is given back when the session ends"
         );
     }
 }
