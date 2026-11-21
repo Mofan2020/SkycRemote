@@ -240,3 +240,106 @@ async fn several_pictures_in_a_row_all_arrive() {
 
     assert_eq!(arrived, expected, "every picture must arrive, in order");
 }
+
+/// A session that has been through the handshake still works: the
+/// control messages arrive, and so do the pictures.
+#[tokio::test]
+async fn a_session_with_the_handshake_still_works() {
+    use skycremote_core::handshake::{controller_handshake, host_handshake, HostIdentity};
+    use skycremote_core::protocol::Message;
+
+    let salt = b"the salt of this device".to_vec();
+    let verifier = skycremote_core::crypto::code_verifier(&salt, "123456");
+    let identity = HostIdentity {
+        device_id: "the-device".into(),
+        device_name: "The Device".into(),
+        port: 21116,
+        salt: salt.clone(),
+        verifier,
+    };
+
+    let (server, server_address) = listen(0).await.expect("the port must open");
+    let client_endpoint = connect(server_address).await.expect("the port must open");
+
+    let accept_task = tokio::spawn(async move {
+        accept(&server, Duration::from_secs(10))
+            .await
+            .expect("the connection must come in")
+    });
+
+    let client = client_endpoint
+        .connect(server_address, "skycremote")
+        .expect("the connection must start")
+        .await
+        .expect("the connection must be made");
+    let server_connection = accept_task.await.expect("the task must finish");
+
+    let (client_side, server_side) = tokio::join!(
+        open(client, Side::Initiator),
+        open(server_connection, Side::Responder),
+    );
+    let (client_sender, mut client_receiver) = client_side.expect("the client must open");
+    let (server_sender, mut server_receiver) = server_side.expect("the host must open");
+
+    let (host_task, controller_task) = tokio::join!(
+        host_handshake(&server_sender, &mut server_receiver, &identity),
+        controller_handshake(&client_sender, &mut client_receiver, &identity, "123456"),
+    );
+    let host = host_task.expect("the host must get in");
+    let controller = controller_task.expect("the controller must get in");
+    assert_eq!(host.verify_code, controller.verify_code);
+
+    // A control message goes over the encrypted channel.
+    let text = serde_json::to_string(&Message::ListScreens).expect("serialisable");
+    client_sender
+        .send_control(bytes::Bytes::from(text))
+        .await
+        .expect("the message must go out");
+    match server_receiver.recv().await {
+        Incoming::Control(data) => {
+            let text = std::str::from_utf8(&data).expect("readable");
+            assert!(
+                text.contains("ListScreens"),
+                "the message must come back whole: {text}"
+            );
+        }
+        other => panic!("expected a control message, got {other:?}"),
+    }
+
+    // A picture goes over the encrypted video channel.
+    let picture = a_test_picture();
+    let frame = Frame {
+        image: picture.clone(),
+        captured_at: Instant::now(),
+    };
+    let mut encoder =
+        Encoder::new(EncoderConfig::for_screen(WIDTH, HEIGHT)).expect("the encoder must be built");
+    let encoded = encoder.encode(&frame).expect("encodable").expect("a frame");
+    let pieces = split_frame(&encoded, 1).expect("splittable");
+    for piece in pieces {
+        client_sender
+            .send_video(piece)
+            .expect("the piece must go out");
+    }
+
+    let mut assembler = FrameAssembler::new();
+    assembler.set_picture_size(WIDTH, HEIGHT);
+    let mut arrived = None;
+    while arrived.is_none() {
+        match server_receiver.recv().await {
+            Incoming::Video(datagram) => {
+                if let Some(picture) = assembler.push(&datagram).expect("no stale piece") {
+                    arrived = Some(picture.data);
+                }
+            }
+            Incoming::Control(_) => continue,
+            Incoming::Closed => panic!("the connection closed too early"),
+        }
+    }
+
+    assert_eq!(
+        arrived.expect("the picture must come back"),
+        encoded.data,
+        "the picture must come back whole"
+    );
+}

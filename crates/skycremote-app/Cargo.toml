@@ -1,6 +1,6 @@
 [package]
 name = "skycremote-app"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "SkycRemote: the program you open on both ends."
@@ -37,6 +37,7 @@ include_dir = "0.7"
 bytes = "1"
 base64 = "0.22"
 if-addrs = "0.13"
+rand = "0.10"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = "0.26"

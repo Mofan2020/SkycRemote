@@ -7,6 +7,7 @@
 pub mod capture;
 pub mod crypto;
 pub mod encode;
+pub mod handshake;
 pub mod hole;
 pub mod host;
 pub mod input;
@@ -17,4 +18,4 @@ pub mod transport;
 
 /// The version of the wire protocol.  A peer that speaks a different one
 /// is refused instead of being allowed to misbehave.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;

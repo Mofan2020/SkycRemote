@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use skycremote_core::capture;
+use skycremote_core::handshake::{self, HostIdentity};
 use skycremote_core::protocol::{InputEvent, Message};
 use skycremote_core::session::FrameAssembler;
 use skycremote_core::transport;
@@ -205,6 +206,83 @@ impl Settings {
     pub fn framerate(&self) -> u32 {
         self.number("framerate")
     }
+
+    /// The access code of this device, the one others type to control it.
+    pub fn access_code(&self) -> String {
+        self.text("accessCode")
+    }
+
+    /// The salt of this device.
+    ///
+    /// It is made once and then kept, so that the value the access
+    /// code is turned into stays the same.
+    pub fn salt(&self) -> Vec<u8> {
+        match self
+            .values
+            .get("accessSalt")
+            .and_then(|value| value.as_str())
+        {
+            Some(text) => match hex_to_bytes(text) {
+                Some(bytes) if !bytes.is_empty() => bytes,
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    /// Put the salt of this device down.
+    pub fn set_salt(&mut self, salt: &[u8]) {
+        self.values
+            .insert("accessSalt".to_string(), json!(bytes_to_hex(salt)));
+    }
+
+    /// What the access code of this device is turned into.
+    pub fn verifier(&self, access_code: &str) -> [u8; 32] {
+        let salt = self.salt();
+        skycremote_core::crypto::code_verifier(&salt, access_code)
+    }
+
+    /// The salt and the value of the access code of this device.
+    ///
+    /// The salt is made the first time it is asked for and then kept,
+    /// so that the value of the access code does not change from one
+    /// moment to the next.
+    pub fn access_material(&mut self, access_code: &str) -> (Vec<u8>, [u8; 32]) {
+        let mut salt = self.salt();
+        if salt.is_empty() {
+            let mut fresh = [0u8; 32];
+            rand::fill(&mut fresh);
+            salt = fresh.to_vec();
+            self.set_salt(&salt);
+        }
+        let verifier = self.verifier(access_code);
+        (salt, verifier)
+    }
+}
+
+/// The bytes of a hex text.
+fn hex_to_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() / 2);
+    let bytes = text.as_bytes();
+    for pair in bytes.chunks(2) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        out.push((high * 16 + low) as u8);
+    }
+    Some(out)
+}
+
+/// The hex text of some bytes.
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 impl Settings {
@@ -505,6 +583,19 @@ impl Backend {
         );
         self.log("info", format!("正在连 {device_id}，Tracker {tracker}"));
 
+        // The access code of the machine that is being controlled.
+        // Without it there is no session: the other end does not let
+        // anybody in who cannot say the code.
+        let access_code = payload
+            .get("accessCode")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if access_code.is_empty() {
+            return Err(Refused::refused("noAccessCode", "还没有填访问口令"));
+        }
+
         let (sender, receiver) = transport::connect_direct(&tracker, &device_id)
             .await
             .map_err(|error| anyhow!("连不上 {device_id}：{error}"))?;
@@ -513,6 +604,32 @@ impl Backend {
         // numbers are of the connection that was just made.
         let peer = sender.peer_address().to_string();
         let latency = sender.latency_us() as f64 / 1000.0;
+
+        // The handshake is where the two ends say who they are and
+        // prove that they know the access code.  Nothing is shared
+        // before it is done.
+        let mut receiver = receiver;
+        let identity = HostIdentity {
+            device_id: self.settings.device_id(),
+            device_name: self.settings.device_name(),
+            port: 0,
+            salt: Vec::new(),
+            verifier: [0u8; 32],
+        };
+        let session =
+            match handshake::controller_handshake(&sender, &mut receiver, &identity, &access_code)
+                .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    sender.close();
+                    let text = error.to_string();
+                    if text.contains("口令") {
+                        return Err(Refused::refused("accessDenied", "访问口令不对"));
+                    }
+                    return Err(anyhow!("握手没有成功：{text}"));
+                }
+            };
 
         self.session = Some(Session { sender });
         self.log("info", format!("连上了 {device_id}"));
@@ -523,6 +640,7 @@ impl Backend {
                 "deviceId": device_id,
                 "peer": peer,
                 "latencyMs": latency,
+                "verifyCode": session.verify_code,
             }),
         );
 
@@ -530,7 +648,11 @@ impl Backend {
         // pictures, and the messages of the person on the other side.
         self.listen(receiver);
 
-        Ok(json!({ "ok": true, "deviceId": device_id }))
+        Ok(json!({
+            "ok": true,
+            "deviceId": device_id,
+            "verifyCode": session.verify_code,
+        }))
     }
 
     /// Hang up.
@@ -577,7 +699,22 @@ impl Backend {
         self.settings.set_text("deviceName", &device_name);
         self.settings.save()?;
 
-        let options = self.host_options();
+        // The access code of this machine, and the value it is turned
+        // into.  The code itself is what the person tells the other
+        // side; the value is what the handshake uses.
+        let access_code = self.settings.access_code();
+        if access_code.trim().is_empty() {
+            return Err(Refused::refused(
+                "noAccessCode",
+                "还没有设置访问口令，先在设置里填一个再共享",
+            ));
+        }
+        let (salt, verifier) = self.settings.access_material(&access_code);
+        self.settings.save()?;
+
+        let mut options = self.host_options();
+        options.salt = salt;
+        options.verifier = verifier;
         let service = skycremote_core::host::HostService::new(options);
         let token = service.token();
         let updates = service.update_handle();
@@ -600,6 +737,15 @@ impl Backend {
                     skycremote_core::host::HostEvent::PeerLeft => {
                         log_to(&out, &logs, "info", "对面断开了");
                         json!({ "state": "waiting" })
+                    }
+                    skycremote_core::host::HostEvent::Verified { verify_code } => {
+                        log_to(
+                            &out,
+                            &logs,
+                            "info",
+                            format!("对面已经通过口令核对，安全码 {verify_code}"),
+                        );
+                        json!({ "state": "sharing", "verifyCode": verify_code })
                     }
                     skycremote_core::host::HostEvent::Warning { message } => {
                         log_to(&out, &logs, "warning", message.clone());
@@ -774,11 +920,28 @@ impl Backend {
         if let Some(value) = payload.get("framerate").and_then(|value| value.as_u64()) {
             self.settings.set_number("framerate", value as u32);
         }
+        // The access code of this machine.  It is what somebody else
+        // types to control this computer.
+        if let Some(value) = payload.get("accessCode").and_then(|value| value.as_str()) {
+            self.settings.set_text("accessCode", value.trim());
+            // The salt and the value the code is turned into follow
+            // the code, so that they are ready for the next session.
+            let code = value.trim().to_string();
+            self.settings.access_material(&code);
+        }
+        // The codes of the machines this one has connected to.
+        if let Some(object) = payload
+            .get("savedCodes")
+            .and_then(|value| value.as_object())
+        {
+            let codes: Value = Value::Object(object.clone());
+            self.settings.put("savedCodes", codes);
+        }
         if let Some(object) = payload.as_object() {
             for (key, value) in object {
                 match key.as_str() {
                     "language" | "theme" | "tracker" | "deviceId" | "deviceName" | "quality"
-                    | "bitrate" | "framerate" => {}
+                    | "bitrate" | "framerate" | "accessCode" | "savedCodes" => {}
                     _ => self.settings.put(key, value.clone()),
                 }
             }
@@ -895,6 +1058,8 @@ impl Backend {
             port: 21116,
             fps: self.settings.framerate(),
             bitrate_bps: self.settings.bitrate_mbps().saturating_mul(1_000_000),
+            salt: Vec::new(),
+            verifier: [0u8; 32],
         }
     }
 
@@ -1154,11 +1319,47 @@ fn error_message(error: &anyhow::Error) -> Value {
             "message": format!("{} is not connected yet", code.0),
         });
     }
+    if let Some(refused) = error.downcast_ref::<Refused>() {
+        return json!({
+            "code": refused.code,
+            "message": refused.message,
+        });
+    }
     json!({
         "code": "failed",
         "message": error.to_string(),
     })
 }
+
+/// A request that was refused, with a reason the window knows.
+///
+/// The window turns the code into words, so that a person is told
+/// what to do instead of seeing that something went wrong.
+#[derive(Debug)]
+struct Refused {
+    /// The code the window knows.
+    code: &'static str,
+    /// The sentence for the person.
+    message: String,
+}
+
+impl Refused {
+    /// Make a refusal.
+    fn refused(code: &'static str, message: &str) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            code,
+            message: message.to_string(),
+        })
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// A part of the program that is not there yet.
 #[derive(Debug)]
@@ -1255,5 +1456,86 @@ mod tests {
         let read = Settings::load_from(&path);
         assert_eq!(read.tracker(), DEFAULT_TRACKER);
         assert_eq!(read.bitrate_mbps(), DEFAULT_BITRATE_MBPS);
+    }
+
+    /// The access code has to survive the trip through the file, and
+    /// the value it is turned into has to stay the same afterwards.
+    #[test]
+    fn the_access_code_survives_the_file() {
+        let path = scratch("access-code");
+
+        let mut settings = Settings::default();
+        settings.set_text("accessCode", "8899");
+        let (salt, verifier) = settings.access_material("8899");
+        settings
+            .save_to(&path)
+            .expect("the settings could not be written");
+
+        let read = Settings::load_from(&path);
+        assert_eq!(read.access_code(), "8899");
+        assert_eq!(read.salt(), salt, "the salt must not change");
+        assert_eq!(
+            read.verifier("8899"),
+            verifier,
+            "the value of the access code must not change"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("no folder"));
+    }
+
+    /// Two devices have two different codes, and the code of one
+    /// device does not work on another one.
+    #[test]
+    fn the_value_of_the_code_is_different_on_another_device() {
+        let mut one = Settings::default();
+        let (_, one_verifier) = one.access_material("1234");
+
+        let mut other = Settings::default();
+        let (_, other_verifier) = other.access_material("1234");
+
+        assert_ne!(
+            one_verifier, other_verifier,
+            "the same code on another device must give another value"
+        );
+    }
+
+    /// The codes of the machines this one has connected to are kept,
+    /// one for each of them.
+    #[test]
+    fn the_codes_of_the_other_machines_are_kept() {
+        let path = scratch("saved-codes");
+
+        let mut settings = Settings::default();
+        let mut codes = serde_json::Map::new();
+        codes.insert("device-one".to_string(), json!("1111"));
+        codes.insert("device-two".to_string(), json!("2222"));
+        settings.put("savedCodes", Value::Object(codes));
+        settings
+            .save_to(&path)
+            .expect("the settings could not be written");
+
+        let read = Settings::load_from(&path);
+        let saved = read
+            .values
+            .get("savedCodes")
+            .and_then(|value| value.as_object())
+            .expect("the codes must be there");
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved.get("device-one"), Some(&json!("1111")));
+        assert_eq!(saved.get("device-two"), Some(&json!("2222")));
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("no folder"));
+    }
+
+    /// The hex text and the bytes it stands for are the same thing
+    /// both ways round.
+    #[test]
+    fn hex_and_bytes_are_the_same_thing() {
+        let bytes = vec![0u8, 1, 15, 16, 200, 255];
+        let text = bytes_to_hex(&bytes);
+        assert_eq!(text, "00010f10c8ff");
+        assert_eq!(hex_to_bytes(&text), Some(bytes));
+        assert_eq!(hex_to_bytes("abc"), None, "half a byte is not a byte");
+        assert_eq!(hex_to_bytes("zz"), None, "not hex is not hex");
     }
 }

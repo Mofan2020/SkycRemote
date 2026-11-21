@@ -36,46 +36,32 @@
    * ---------------------------------------------------------------- */
 
   var FAKE_DEVICES = [
-    {
-      id: '4821-9930-AX7',
-      name: 'Studio Mac Pro',
-      platform: 'macOS',
-      online: true,
-      latency: 18,
-      favorite: true,
-      lastSeen: '2026-11-18T21:40:00Z',
-      screens: 2
-    },
-    {
-      id: '1044-7721-KQ2',
-      name: 'Windows Workstation',
-      platform: 'Windows 11',
-      online: true,
-      latency: 42,
-      favorite: false,
-      lastSeen: '2026-11-19T09:12:00Z',
-      screens: 1
-    },
-    {
-      id: '7730-2218-LM4',
-      name: 'Office iMac',
-      platform: 'macOS',
-      online: false,
-      latency: null,
-      favorite: true,
-      lastSeen: '2026-11-14T16:03:00Z',
-      screens: 1
-    },
-    {
-      id: '5562-8814-ZT9',
-      name: 'Ubuntu Server',
-      platform: 'Linux',
-      online: true,
-      latency: 96,
-      favorite: false,
-      lastSeen: '2026-11-19T07:55:00Z',
-      screens: 3
-    }
+    { id: '4821-9930-AX7', name: 'Studio Mac Pro', online: true },
+    { id: '1044-7721-KQ2', name: 'Windows Workstation', online: true },
+    { id: '7730-2218-LM4', name: 'Office iMac', online: false }
+  ];
+
+  // The code the other side asks for.  It is shown in the dialog so
+  // that the demo can be walked through.
+  var FAKE_PEER_CODE = '1234';
+
+  var FAKE_SETTINGS = {
+    language: 'zh',
+    theme: 'dark',
+    tracker: 'http://127.0.0.1:21115',
+    deviceId: 'demo-mac-4821',
+    deviceName: '我的 Mac',
+    quality: 'auto',
+    bitrate: 8,
+    framerate: 30,
+    accessCode: '8899',
+    savedCodes: { '1044-7721-KQ2': '2468' }
+  };
+
+  var FAKE_LOGS = [
+    { time: Date.now() - 60000, level: 'info', message: '程序起来了' },
+    { time: Date.now() - 30000, level: 'info', message: 'Tracker 在 http://127.0.0.1:21115' },
+    { time: Date.now() - 5000, level: 'warning', message: '还没有设置设备 ID' }
   ];
 
   var FAKE_SCREENS = [
@@ -206,13 +192,23 @@
 
   var mockState = {
     connected: false,
+    sharing: false,
     screen: 0,
     virtualScreen: false,
     privacyScreen: false,
     latency: 18,
     bitrate: 8.4,
-    fps: 60
+    fps: 60,
+    settings: JSON.parse(JSON.stringify(FAKE_SETTINGS)),
+    logs: FAKE_LOGS.slice()
   };
+
+  /** An error the way the backend sends one. */
+  function fail(code, message) {
+    var error = new Error(message);
+    error.code = code;
+    return Promise.reject(error);
+  }
 
   function delay(ms, value) {
     return new Promise(function (resolve) {
@@ -222,12 +218,45 @@
 
   function mockCall(command, payload) {
     switch (command) {
-      case 'connect':
+      case 'connect': {
+        var code = (payload.accessCode || '').trim();
+        if (!code) return fail('noAccessCode', '对面没有设访问口令');
+        if (code !== FAKE_PEER_CODE) return fail('accessDenied', '访问口令不对');
+        mockState.connected = true;
+        emitLocal('connection', { state: 'connecting', deviceId: payload.deviceId });
+        setTimeout(function () {
+          if (!mockState.connected) return;
+          emitLocal('connection', {
+            state: 'connected',
+            deviceId: payload.deviceId,
+            peer: '192.168.1.31:21116',
+            latencyMs: 18,
+            verifyCode: '482913'
+          });
+        }, 200);
         return delay(360, { ok: true, deviceId: payload.deviceId });
+      }
 
       case 'disconnect':
         mockState.connected = false;
         return delay(80, { ok: true });
+
+      case 'startHost':
+        mockState.sharing = true;
+        emitLocal('host', { state: 'waiting' });
+        setTimeout(function () {
+          if (!mockState.sharing) return;
+          emitLocal('host', { state: 'sharing', peer: '192.168.1.31:21116', verifyCode: '482913' });
+        }, 900);
+        return delay(120, { ok: true, deviceId: mockState.settings.deviceId });
+
+      case 'stopHost':
+        mockState.sharing = false;
+        emitLocal('host', { state: 'stopped' });
+        return delay(80, { ok: true });
+
+      case 'hostStatus':
+        return delay(40, { sharing: mockState.sharing });
 
       case 'listScreens':
         return delay(120, FAKE_SCREENS.slice());
@@ -251,10 +280,41 @@
         return delay(120, { ok: true, action: payload.action });
 
       case 'getSettings':
-        return delay(60, {});
+        return delay(60, JSON.parse(JSON.stringify(mockState.settings)));
 
       case 'saveSettings':
-        return delay(80, { ok: true });
+        mockState.settings = JSON.parse(JSON.stringify(payload || {}));
+        return delay(80, { ok: true, settings: mockState.settings, applied: [] });
+
+      case 'getLogs':
+        return delay(40, { entries: mockState.logs.slice() });
+
+      case 'clearLogs':
+        mockState.logs = [];
+        return delay(40, { ok: true });
+
+      case 'trackerInfo':
+        return delay(40, {
+          ok: true,
+          url: mockState.settings.tracker,
+          lanUrl: 'http://192.168.1.20:21115',
+          local: true,
+          running: true
+        });
+
+      case 'appInfo':
+        return delay(20, { name: 'SkycRemote', version: '0.6.0' });
+
+      case 'log':
+        mockState.logs.push({
+          time: Date.now(),
+          level: payload.level || 'info',
+          message: payload.message || ''
+        });
+        return delay(10, { ok: true });
+
+      case 'quit':
+        return delay(20, { ok: true });
 
       case 'uploadFile':
         return delay(100, { ok: true, name: payload.name });

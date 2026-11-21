@@ -21,8 +21,10 @@ use std::time::Duration;
 ///
 /// A datagram can hold about 1200 bytes before the IP, UDP and QUIC
 /// headers push it past what a network will carry without fragmenting,
-/// and the header takes the rest.
-pub const PIECE_PAYLOAD: usize = 1150;
+/// and the header takes the rest.  The piece is encrypted on its way,
+/// and the encryption adds a nonce and a tag, so the room for the
+/// picture is smaller than it used to be.
+pub const PIECE_PAYLOAD: usize = 1100;
 
 /// The mark that starts every header, so a stray datagram is recognised
 /// and dropped instead of being read as a picture.

@@ -23,6 +23,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use bytes::{Bytes, BytesMut};
+use parking_lot::RwLock;
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,6 +34,36 @@ use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 
 /// How big one picture chunk may be before it is split.
 const CHUNK_SIZE: usize = 16 * 1024;
+
+/// The mark that says a frame is encrypted.
+///
+/// The handshake goes over the channel in the clear, because the key
+/// that would encrypt it is only known after the handshake.  Every
+/// frame says whether it is encrypted, so the other end always knows
+/// what it is looking at.
+const FLAG_PLAIN: u8 = 0;
+/// The mark that says a frame is encrypted.
+const FLAG_ENCRYPTED: u8 = 1;
+
+/// A key that can be put on later.
+///
+/// The handshake happens after the channel is open, so the key cannot
+/// be there from the start.  It is put on afterwards, and every copy
+/// of the sender sees it, because they all share this.
+#[derive(Clone, Default)]
+pub struct CipherSlot(Arc<RwLock<Option<Arc<crate::crypto::SessionKey>>>>);
+
+impl CipherSlot {
+    /// Put a key on.
+    pub fn set(&self, key: crate::crypto::SessionKey) {
+        *self.0.write() = Some(Arc::new(key));
+    }
+
+    /// The key that is on, if there is one.
+    pub fn get(&self) -> Option<Arc<crate::crypto::SessionKey>> {
+        self.0.read().clone()
+    }
+}
 
 /// Which side of the session this is.
 ///
@@ -56,6 +87,10 @@ pub struct Receiver {
     video: mpsc::UnboundedReceiver<Bytes>,
     /// The connection, kept so the caller can ask about it.
     connection: Connection,
+    /// The key of the control channel, once it has been agreed on.
+    control_cipher: CipherSlot,
+    /// The key of the video channel, once it has been agreed on.
+    video_cipher: CipherSlot,
 }
 
 /// The side of the channel that writes.
@@ -73,6 +108,10 @@ pub struct Sender {
     control: Arc<tokio::sync::Mutex<SendStream>>,
     /// The connection, kept so the caller can ask about it.
     connection: Connection,
+    /// The key of the control channel, once it has been agreed on.
+    control_cipher: CipherSlot,
+    /// The key of the video channel, once it has been agreed on.
+    video_cipher: CipherSlot,
 }
 
 /// What comes out of the receiver.
@@ -100,7 +139,7 @@ impl Receiver {
                 Some(chunk) => Incoming::Video(chunk),
                 None => Incoming::Closed,
             },
-            data = read_one_message(&mut self.control) => match data {
+            data = read_one_message(&mut self.control, &self.control_cipher) => match data {
                 Ok(Some(data)) => Incoming::Control(data),
                 Ok(None) => Incoming::Closed,
                 Err(_) => Incoming::Closed,
@@ -122,24 +161,55 @@ impl Receiver {
     pub fn is_open(&self) -> bool {
         self.connection.close_reason().is_none()
     }
+
+    /// Put the keys of the session on the channel.
+    ///
+    /// After this, everything that comes in is encrypted.
+    pub fn set_ciphers(
+        &self,
+        control: crate::crypto::SessionKey,
+        video: crate::crypto::SessionKey,
+    ) {
+        self.control_cipher.set(control);
+        self.video_cipher.set(video);
+    }
 }
 
 impl Sender {
     /// Send a control message.  It arrives, or it does not.
     ///
     /// The stream sends the data on its own; there is nothing to flush.
+    ///
+    /// Once the keys of the session are known, the message is
+    /// encrypted before it goes out.  A flag in front of the message
+    /// says whether it is, so that the other end always knows.
     pub async fn send_control(&self, data: Bytes) -> Result<()> {
+        let (flag, body) = match self.control_cipher.get() {
+            Some(key) => (
+                FLAG_ENCRYPTED,
+                key.encrypt(&data)
+                    .map_err(|err| anyhow!("the message could not be encrypted: {err}"))?,
+            ),
+            None => (FLAG_PLAIN, data.to_vec()),
+        };
+
         // Every message is sent with its length in front of it, because
         // a stream does not keep the borders between two messages: read
-        // too much and two messages arrive as one.
-        let length = (data.len() as u32).to_be_bytes();
+        // too much and two messages arrive as one.  The length counts
+        // the mark as well, so the reader knows how many bytes are
+        // coming before it reads any of them.
+        let length = ((body.len() + 1) as u32).to_be_bytes();
         let mut control = self.control.lock().await;
         control
             .write_all(&length)
             .await
             .context("the control stream failed")?;
         control
-            .write_all(&data)
+            .write_all(&[flag])
+            .await
+            .context("the control stream failed")?;
+        control
+            .write_all(&body)
             .await
             .context("the control stream failed")?;
         Ok(())
@@ -147,9 +217,19 @@ impl Sender {
 
     /// Send a piece of a picture.  It arrives, or it does not, and
     /// nobody waits for the answer.
+    ///
+    /// The whole datagram is encrypted once the keys are known, so
+    /// that the picture cannot be read on the way.
     pub fn send_video(&self, data: Bytes) -> Result<()> {
+        let body = match self.video_cipher.get() {
+            Some(key) => Bytes::from(
+                key.encrypt(&data)
+                    .map_err(|err| anyhow!("the picture could not be encrypted: {err}"))?,
+            ),
+            None => data,
+        };
         self.connection
-            .send_datagram(data)
+            .send_datagram(body)
             .map_err(|_| anyhow!("the video channel is closed"))
     }
 
@@ -166,6 +246,18 @@ impl Sender {
     /// Say goodbye and close the connection.
     pub fn close(&self) {
         self.connection.close(0u32.into(), b"bye");
+    }
+
+    /// Put the keys of the session on the channel.
+    ///
+    /// After this, everything that goes out is encrypted.
+    pub fn set_ciphers(
+        &self,
+        control: crate::crypto::SessionKey,
+        video: crate::crypto::SessionKey,
+    ) {
+        self.control_cipher.set(control);
+        self.video_cipher.set(video);
     }
 }
 
@@ -559,6 +651,14 @@ pub async fn accept_cancellable(
 /// The control channel is the first stream; the video goes over
 /// datagrams, which need no stream of their own.
 pub async fn open(connection: Connection, side: Side) -> Result<(Sender, Receiver)> {
+    // The keys of the two directions are kept apart.  The two ends of
+    // a session use different keys to send and to receive, so the
+    // sending half and the receiving half must not share a slot:
+    // otherwise one would put its key over the other's.
+    let control_out = CipherSlot::default();
+    let video_out = CipherSlot::default();
+    let control_in = CipherSlot::default();
+    let video_in = CipherSlot::default();
     // One two-way stream carries the control messages in both
     // directions.  The side that starts the connection opens it and the
     // other side accepts it; both then write on that one stream, which
@@ -593,10 +693,22 @@ pub async fn open(connection: Connection, side: Side) -> Result<(Sender, Receive
     let (video_send, video_recv) = mpsc::unbounded_channel();
 
     // The datagrams arrive on the connection, so somebody has to read
-    // them and put them into the channel.
+    // them and put them into the channel.  The key is read at the
+    // moment the datagram arrives, because the handshake puts it on
+    // after the channel is open.
     let pump_connection = connection.clone();
+    let pump_cipher = video_in.clone();
     tokio::spawn(async move {
         while let Ok(data) = pump_connection.read_datagram().await {
+            let data = match pump_cipher.get() {
+                Some(key) => match key.decrypt(&data) {
+                    Ok(plain) => Bytes::from(plain),
+                    // A datagram that cannot be read is thrown away:
+                    // the picture it belongs to is incomplete anyway.
+                    Err(_) => continue,
+                },
+                None => data,
+            };
             if video_send.send(data).is_err() {
                 break;
             }
@@ -606,11 +718,15 @@ pub async fn open(connection: Connection, side: Side) -> Result<(Sender, Receive
     let sender = Sender {
         control: Arc::new(tokio::sync::Mutex::new(control_send)),
         connection: connection.clone(),
+        control_cipher: control_out.clone(),
+        video_cipher: video_out.clone(),
     };
     let receiver = Receiver {
         control: control_recv,
         video: video_recv,
         connection,
+        control_cipher: control_in.clone(),
+        video_cipher: video_in.clone(),
     };
     Ok((sender, receiver))
 }
@@ -619,7 +735,7 @@ pub async fn open(connection: Connection, side: Side) -> Result<(Sender, Receive
 ///
 /// The length comes first, so two messages that arrive together are
 /// still two messages and not one long one.
-async fn read_one_message(stream: &mut RecvStream) -> Result<Option<Bytes>> {
+async fn read_one_message(stream: &mut RecvStream, cipher: &CipherSlot) -> Result<Option<Bytes>> {
     let mut length_bytes = [0u8; 4];
     match stream.read_exact(&mut length_bytes).await {
         Ok(_) => {}
@@ -627,12 +743,35 @@ async fn read_one_message(stream: &mut RecvStream) -> Result<Option<Bytes>> {
         Err(err) => return Err(anyhow!("the control stream failed: {err}")),
     }
     let length = u32::from_be_bytes(length_bytes) as usize;
+    if length == 0 {
+        return Err(anyhow!("the message had no mark in it"));
+    }
+
     let mut data = vec![0u8; length];
     stream
         .read_exact(&mut data)
         .await
         .map_err(|err| anyhow!("the control stream failed: {err}"))?;
-    Ok(Some(Bytes::from(data)))
+    let flag = data[0];
+    let data = data[1..].to_vec();
+
+    // The flag says whether the message is encrypted.  A message that
+    // says it is encrypted but arrives before the keys are known is
+    // refused: something is wrong with the order of the handshake.
+    let data = match flag {
+        FLAG_PLAIN => Bytes::from(data),
+        FLAG_ENCRYPTED => {
+            let Some(key) = cipher.get() else {
+                return Err(anyhow!("an encrypted message arrived before the keys"));
+            };
+            let plain = key
+                .decrypt(&data)
+                .map_err(|err| anyhow!("the message could not be read: {err}"))?;
+            Bytes::from(plain)
+        }
+        other => return Err(anyhow!("the message had an unknown mark: {other}")),
+    };
+    Ok(Some(data))
 }
 
 /// Split a picture into chunks that fit into a datagram.

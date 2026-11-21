@@ -4413,7 +4413,7 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skycremote-app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4422,6 +4422,7 @@ dependencies = [
  "if-addrs",
  "include_dir",
  "log",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "skycremote-core",
@@ -4439,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "skycremote-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4478,7 +4479,7 @@ dependencies = [
 
 [[package]]
 name = "skycremote-installer"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "include_dir",
  "serde_json",
@@ -4489,7 +4490,7 @@ dependencies = [
 
 [[package]]
 name = "skycremote-tracker"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "axum",

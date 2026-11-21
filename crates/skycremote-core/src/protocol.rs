@@ -16,6 +16,10 @@ pub enum Message {
     Hello(Hello),
     /// The answer to a hello.  It carries the session key material.
     HelloAck(HelloAck),
+    /// The access code the controller sends.
+    Auth(Auth),
+    /// The answer to the access code.
+    AuthResult(AuthResult),
     /// A key event, a mouse event, a scroll, a paste.
     Input(InputEvent),
     /// The screen the control end is looking at.
@@ -98,6 +102,30 @@ pub struct HelloAck {
     /// an unknown account gets the screen and no keyboard.
     pub allowed: bool,
     /// Why the connection was refused, when it was.
+    pub reason: String,
+    /// The salt the access code is stretched with.  The two ends have
+    /// to stretch the same code the same way, and this is what says
+    /// how.
+    pub salt: Vec<u8>,
+    /// The proof that the answering side knows the access code.
+    pub proof: Vec<u8>,
+    /// The six digits the two ends show to each other.
+    pub verify_code: String,
+}
+
+/// The controller shows the access code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Auth {
+    /// The proof that the sending side knows the access code.
+    pub proof: Vec<u8>,
+}
+
+/// The answer to the access code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthResult {
+    /// Whether the controller may go on.
+    pub allowed: bool,
+    /// Why it was refused, when it was.
     pub reason: String,
 }
 

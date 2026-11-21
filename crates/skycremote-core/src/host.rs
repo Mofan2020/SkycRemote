@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capture::{self, Screen};
 use crate::encode::EncoderConfig;
+use crate::handshake::{self, HostIdentity};
 use crate::input;
 use crate::pipeline::{self, ScreenSource};
 use crate::protocol::{Message, ScreenInfo};
@@ -55,6 +56,14 @@ pub enum HostEvent {
     },
     /// The other end left.
     PeerLeft,
+    /// The other end proved that it knows the access code.
+    ///
+    /// The six digits are the same on both screens.  When they are
+    /// the same, nobody is in the middle.
+    Verified {
+        /// The six digits the two ends show to each other.
+        verify_code: String,
+    },
     /// Something is worth telling the user about, but the share goes on.
     Warning {
         /// What to say.
@@ -77,6 +86,16 @@ pub struct HostOptions {
     pub fps: u32,
     /// How many bits a second the pictures may use.
     pub bitrate_bps: u32,
+    /// The salt of this device.
+    ///
+    /// It is different on every device, so that the same access code
+    /// means something different on each of them.
+    pub salt: Vec<u8>,
+    /// What the access code of this device is turned into.
+    ///
+    /// The code itself is not kept here, only this value.  When the
+    /// controller types the code, it turns it into the same value.
+    pub verifier: [u8; 32],
 }
 
 impl Default for HostOptions {
@@ -88,6 +107,8 @@ impl Default for HostOptions {
             port: 21116,
             fps: 30,
             bitrate_bps: 2_000_000,
+            salt: Vec::new(),
+            verifier: [0u8; 32],
         }
     }
 }
@@ -253,6 +274,23 @@ impl HostService {
         )
         .await
         .context("the other end did not arrive")?;
+
+        // The handshake is where the two ends say who they are and
+        // prove that they know the access code.  Nothing is shared
+        // before it is done, so a stranger never sees the screen.
+        let identity = HostIdentity {
+            device_id: device_id.clone(),
+            device_name: device_name.clone(),
+            port,
+            salt: self.options.salt.clone(),
+            verifier: self.options.verifier,
+        };
+        let session = handshake::host_handshake(&sender, &mut receiver, &identity)
+            .await
+            .context("the other end was not let in")?;
+        let _ = events.send(HostEvent::Verified {
+            verify_code: session.verify_code,
+        });
 
         let _ = events.send(HostEvent::PeerJoined {
             peer: sender.peer_address().to_string(),

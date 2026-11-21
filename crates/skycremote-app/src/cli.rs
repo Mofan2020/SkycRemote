@@ -55,6 +55,9 @@ enum Command {
         /// How many megabits a second the pictures may use.
         #[arg(long, default_value_t = 8)]
         bitrate: u32,
+        /// The access code the other end has to type.
+        #[arg(long, default_value = "")]
+        code: String,
     },
     /// Open the window and connect to a device.
     Control {
@@ -126,6 +129,7 @@ fn main() -> anyhow::Result<()> {
                         port,
                         fps,
                         bitrate,
+                        code,
                     } => {
                         let display_name = if name.is_empty() {
                             id.clone()
@@ -133,6 +137,15 @@ fn main() -> anyhow::Result<()> {
                             name.clone()
                         };
                         eprintln!("skycremote: sharing {id} as {display_name} on port {port}");
+                        // The access code has to be there: without it
+                        // nobody can get in.
+                        if code.trim().is_empty() {
+                            anyhow::bail!("the access code is needed: --code");
+                        }
+                        let mut salt = [0u8; 32];
+                        rand::fill(&mut salt);
+                        let salt = salt.to_vec();
+                        let verifier = skycremote_core::crypto::code_verifier(&salt, &code);
                         let service = skycremote_core::host::HostService::new(
                             skycremote_core::host::HostOptions {
                                 tracker,
@@ -141,6 +154,8 @@ fn main() -> anyhow::Result<()> {
                                 port,
                                 fps,
                                 bitrate_bps: bitrate.saturating_mul(1_000_000),
+                                salt,
+                                verifier,
                             },
                         );
                         // The events are only words on the terminal
@@ -160,6 +175,11 @@ fn main() -> anyhow::Result<()> {
                                     }
                                     skycremote_core::host::HostEvent::PeerLeft => {
                                         eprintln!("skycremote: the other end left");
+                                    }
+                                    skycremote_core::host::HostEvent::Verified { verify_code } => {
+                                        eprintln!(
+                                            "skycremote: the other end is let in, the safety code is {verify_code}"
+                                        );
                                     }
                                     skycremote_core::host::HostEvent::Warning { message } => {
                                         eprintln!("skycremote: {message}");

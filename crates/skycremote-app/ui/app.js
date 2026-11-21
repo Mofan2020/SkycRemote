@@ -5,14 +5,10 @@
  * script so it runs from a file:// URL inside WKWebView / WebView2 /
  * WebKitGTK without a CORS dance.
  *
- * The only global this file creates is `window.skycremote`, the API the
- * Rust side calls into. Everything else lives in this closure.
- *
- * ---------------------------------------------------------------------
- * The backend is a mock.  See components/bridge.js for the seam where
- * the real Rust transport plugs in, and for the list of calls that are
- * currently answered with fake data.
- * ---------------------------------------------------------------------
+ * The window has two states and no menu in between: the list of
+ * devices, and the remote picture.  The backend is reached through
+ * components/bridge.js, which is a mock until the Rust side is
+ * attached.
  */
 (function (global) {
   'use strict';
@@ -25,7 +21,7 @@
   var t = i18n.t;
 
   /* ==================================================================
-   * State
+   * Settings
    * ================================================================== */
 
   // The presets are the numbers that are really used: the picture
@@ -39,76 +35,48 @@
   };
 
   var DEFAULT_SETTINGS = {
+    language: 'zh',
+    theme: 'dark',
+    tracker: 'http://127.0.0.1:21115',
+    deviceId: '',
+    deviceName: '',
     quality: 'auto',
     bitrate: 8,
     framerate: 30,
-    encoder: 'auto',
-    audioEnabled: true,
-    audioQuality: 'high',
-    keymapPreset: 'default',
-    keymapRows: [],
-    gamepadEnabled: true,
-    privacyBlackout: true,
-    privacyAutoLock: false,
-    screensaver: 'none',
-    privacyScreen: false,
-    fileDownloadDir: '~/Downloads/SkycRemote',
-    terminalEnabled: true,
-    terminalShell: 'default',
-    portMappings: [],
-    language: 'zh',
-    theme: 'system',
-    // Where the tracker is.  It is one thing in one place: the
-    // control end and the sharing end both use this one.
-    tracker: 'http://127.0.0.1:21115',
-    deviceId: '',
-    deviceName: ''
+    // The code other people type to connect to this computer.
+    accessCode: '',
+    // The codes this computer has remembered, keyed by device id.
+    savedCodes: {}
   };
 
   var state = {
-    view: 'connect',
-    // What the program is doing: control another device, or let
-    // another device control this one.
-    mode: 'control',
-    // Whether this machine is sharing its screen right now.
-    sharing: false,
-    // The settings as the backend gives them, which are not the
-    // ones this file works with.
-    backendSettings: {},
-    // The decoder for the pictures.  It is made when the first
-    // picture arrives, because a browser that cannot decode H.264
-    // should say so once rather than on every picture.
-    decoder: null,
-    themePref: 'system',
-    resolvedTheme: 'light',
+    view: 'list',
     settings: clone(DEFAULT_SETTINGS),
     devices: [],
-    deviceTab: 'recent',
     deviceQuery: '',
-    screenIndex: 0,
-    screens: [],
-    virtualScreen: false,
-    privacyScreen: false,
-    toolbarVisible: true,
-    toolbarPinned: false,
-    cursorStyle: 'default',
+    // Whether this machine is sharing its screen right now.
+    sharing: false,
+    hostState: 'stopped',
+    hostVerifyCode: '',
+    trackerInfo: null,
     connected: false,
     connecting: false,
-    reconnecting: false,
     connectionStatus: 'idle',
+    // The six digits the other side reads out.
+    verifyCode: '',
+    screens: [],
+    screenIndex: 0,
     latency: null,
     bitrate: null,
     framerate: null,
     resolution: null,
-    currentPath: '/',
-    fileQueue: [],
-    terminalLines: [],
-    terminalOpen: false,
-    fileOpen: false,
-    settingsOpen: false,
-    keymapRecording: null,
-    gamepadPollTimer: null,
-    lastRemoteSize: { width: 0, height: 0 }
+    // The decoder for the pictures.
+    decoder: null,
+    logs: [],
+    themePref: 'dark',
+    resolvedTheme: 'dark',
+    // Who is waiting for a code in the dialog right now.
+    accessResolver: null
   };
 
   function clone(obj) {
@@ -131,73 +99,27 @@
 
   function show(node) { if (node) node.hidden = false; }
   function hide(node) { if (node) node.hidden = true; }
-  function toggle(node, on) { if (node) node.hidden = !on; }
 
-  function setHidden(node, hidden) { if (node) node.hidden = !!hidden; }
-
-  function formatBytes(bytes) {
-    if (bytes === null || bytes === undefined) return '—';
-    if (bytes < 1024) return Math.round(bytes) + ' ' + t('common.bytes');
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' ' + t('common.kb');
-    if (bytes < 1024 * 1024 * 1024) return (bytes / 1048576).toFixed(1) + ' ' + t('common.mb');
-    return (bytes / 1073741824).toFixed(2) + ' ' + t('common.gb');
+  function setText(node, text) {
+    if (node) node.textContent = text === undefined || text === null ? '' : String(text);
+    return node;
   }
 
-  /** Round a byte count to a readable magnitude before showing it. */
-  function formatRate(bytesPerSecond) {
-    if (!isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 ' + t('common.bytes');
-    if (bytesPerSecond < 1024) return Math.round(bytesPerSecond) + ' ' + t('common.bytes');
-    if (bytesPerSecond < 1048576) return (bytesPerSecond / 1024).toFixed(1) + ' ' + t('common.kb');
-    return (bytesPerSecond / 1048576).toFixed(1) + ' ' + t('common.mb');
+  function clamp(value, lo, hi) { return Math.min(hi, Math.max(lo, value)); }
+
+  function bind(node, event, handler) {
+    if (node) node.addEventListener(event, handler);
+    return node;
   }
 
-  function formatEta(seconds) {
-    if (!isFinite(seconds) || seconds < 0) return '—';
-    if (seconds < 60) return Math.round(seconds) + 's';
-    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
-    return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
-  }
-
-  function formatTime(iso) {
-    try {
-      var d = new Date(iso);
-      var diff = (Date.now() - d.getTime()) / 1000;
-      if (diff < 60) return 'just now';
-      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-      if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'd ago';
-      return d.toLocaleDateString();
-    } catch (e) {
-      return '—';
-    }
-  }
-
-  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
-
-  /**
-   * Normalise a list of screens coming from the backend.  Rust's serde
-   * writes `scale_factor`; the UI reads `scaleFactor`.  The bridge
-   * handles both, and this keeps the event path consistent with it.
-   */
   function normaliseScreens(list) {
-    if (!Array.isArray(list)) return [];
-    return list.map(function (s) {
-      return bridge.normaliseScreen ? bridge.normaliseScreen(s) : s;
+    return (list || []).map(function (screen) {
+      return bridge.normaliseScreen(screen);
     }).filter(Boolean);
   }
 
-  function debounce(fn, ms) {
-    var timer = null;
-    return function () {
-      var args = arguments;
-      var self = this;
-      clearTimeout(timer);
-      timer = setTimeout(function () { fn.apply(self, args); }, ms);
-    };
-  }
-
   /* ==================================================================
-   * i18n application
+   * i18n and icons
    * ================================================================== */
 
   function applyI18n(root) {
@@ -213,17 +135,12 @@
     });
   }
 
-  /* ==================================================================
-   * Icons
-   * ================================================================== */
-
   /** Replace every <span data-icon="name"> with its SVG. */
   function hydrateIcons(root) {
     $$('[data-icon]', root || document).forEach(function (node) {
       var name = node.getAttribute('data-icon');
       if (!name) return;
       node.innerHTML = icons.icon(name, { size: parseInt(node.getAttribute('data-icon-size'), 10) || 18 });
-      node.classList.add('icon-filled');
     });
   }
 
@@ -236,38 +153,45 @@
   function resolveTheme(pref) {
     if (pref === 'light' || pref === 'dark') return pref;
     if (systemDark) return systemDark.matches ? 'dark' : 'light';
-    return 'light';
+    return 'dark';
   }
 
   function applyTheme(pref, persist) {
     state.themePref = pref;
     state.resolvedTheme = resolveTheme(pref);
     document.documentElement.setAttribute('data-theme', state.resolvedTheme);
-    var themeIcon = $('#theme-icon');
-    if (themeIcon) {
+
+    var iconNode = $('#theme-icon');
+    if (iconNode) {
       var wanted = state.resolvedTheme === 'dark' ? 'moon' : 'sun';
-      if (themeIcon.getAttribute('data-icon') !== wanted) {
-        themeIcon.setAttribute('data-icon', wanted);
-        hydrateIcons(themeIcon.parentNode);
+      if (iconNode.getAttribute('data-icon') !== wanted) {
+        iconNode.setAttribute('data-icon', wanted);
+        hydrateIcons(iconNode.parentNode);
       }
     }
+
     if (persist) {
       state.settings.theme = pref;
-      try { global.localStorage.setItem('skycremote.theme', pref); } catch (e) { /* ignore */ }
       var sel = $('#settings-theme');
       if (sel) sel.value = pref;
+      persistSettings();
     }
   }
 
   /* ==================================================================
-   * Toasts
+   * Notices
    * ================================================================== */
 
-  var TOAST_ICON = { success: 'check-circle', warning: 'alert-triangle', error: 'x-circle', info: 'info' };
+  var TOAST_ICON = {
+    success: 'check-circle',
+    warning: 'alert-triangle',
+    error: 'x-circle',
+    info: 'info'
+  };
 
   function toast(message, kind, duration) {
     var host = $('#toast-container');
-    if (!host) return;
+    if (!host) return null;
     kind = kind || 'info';
 
     var node = el('div', 'toast toast-' + kind);
@@ -297,7 +221,7 @@
   }
 
   /* ==================================================================
-   * Menus (click-outside close)
+   * Menus
    * ================================================================== */
 
   var openMenu = null;
@@ -323,49 +247,12 @@
     closeMenus();
   });
 
-  /* The context menu is a separate surface from the dropdown menus; it
-     dismisses on any click that is not on one of its own items. */
-  document.addEventListener('click', function (e) {
-    var ctx = $('#context-menu');
-    if (!ctx || ctx.hidden) return;
-    if (ctx.contains(e.target)) return;
-    ctx.hidden = true;
-    ctx.classList.remove('is-in');
-  });
-
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') {
-      if (openMenu) { closeMenus(); return; }
-      closeOverlays();
-    }
+    if (e.key !== 'Escape') return;
+    if (openMenu) { closeMenus(); return; }
+    if (!$('#access-modal').hidden) { closeAccessDialog(null); return; }
+    closeDrawer();
   });
-
-  /* ==================================================================
-   * Modal helpers
-   * ================================================================== */
-
-  var confirmResolver = null;
-
-  function confirmDialog(message) {
-    var modal = $('#confirm-modal');
-    var msg = $('#confirm-message');
-    if (msg) msg.textContent = message;
-    show(modal);
-    return new Promise(function (resolve) { confirmResolver = resolve; });
-  }
-
-  function wireConfirm() {
-    var ok = $('#confirm-ok');
-    var cancel = $('#confirm-cancel');
-    if (ok) ok.addEventListener('click', function () {
-      hide($('#confirm-modal'));
-      if (confirmResolver) { confirmResolver(true); confirmResolver = null; }
-    });
-    if (cancel) cancel.addEventListener('click', function () {
-      hide($('#confirm-modal'));
-      if (confirmResolver) { confirmResolver(false); confirmResolver = null; }
-    });
-  }
 
   /* ==================================================================
    * Settings
@@ -380,102 +267,75 @@
         Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
           if (Object.prototype.hasOwnProperty.call(parsed, key)) state.settings[key] = parsed[key];
         });
-      } catch (e) { /* corrupt, keep defaults */ }
+      } catch (e) { /* corrupt, keep the defaults */ }
     }
-    applyTheme(state.settings.theme || 'system', false);
+    if (!state.settings.savedCodes || typeof state.settings.savedCodes !== 'object') {
+      state.settings.savedCodes = {};
+    }
+    applyTheme(state.settings.theme || 'dark', false);
     i18n.setLocale(state.settings.language || i18n.detect());
   }
 
+  /**
+   * Push the settings to the backend.
+   *
+   * The file on disk belongs to the backend.  The browser's own
+   * storage is only a copy, for the case where the page is opened
+   * without the program behind it.
+   */
   function persistSettings() {
-    // The file on disk belongs to the backend: the browser's own
-    // storage is only a copy for the case where the page is opened
-    // without the program behind it.
     try {
       global.localStorage.setItem('skycremote.settings', JSON.stringify(state.settings));
     } catch (e) { /* ignore */ }
-    if (bridge.isNative()) {
-      bridge.call('saveSettings', state.settings).then(function (result) {
-        // What became of the settings: the numbers of the pictures
-        // can be changed while the share is on, the rest waits.
-        if (result && result.applied && result.applied.length) {
-          result.applied.forEach(function (line) { toast(line, 'info'); });
-        }
-        if (state.mode === 'share') fillShareForm();
-      }).catch(function () {});
-    }
+
+    return bridge.call('saveSettings', state.settings).then(function (result) {
+      if (result && result.applied && result.applied.length) {
+        result.applied.forEach(function (line) { toast(line, 'info'); });
+      }
+    }).catch(function () { /* the backend refused; the page keeps working */ });
   }
 
-  /** Read every control in the settings panel into `state.settings`. */
+  /** Read every control in the settings drawer into the settings. */
   function readSettingsForm() {
     var s = state.settings;
-    s.quality = $('#quality-select').value;
-    s.bitrate = parseInt($('#bitrate-slider').value, 10) || 8;
-    s.framerate = parseInt($('#framerate-slider').value, 10) || 30;
-    s.encoder = $('#encoder-select').value;
-    s.audioEnabled = $('#audio-enabled').checked;
-    s.audioQuality = $('#audio-quality').value;
-    s.keymapPreset = $('#keymap-select').value;
-    s.gamepadEnabled = $('#gamepad-enabled-setting').checked;
-    s.privacyBlackout = $('#privacy-blackout').checked;
-    s.privacyAutoLock = $('#privacy-autolock').checked;
-    s.screensaver = $('#screensaver-select').value;
-    s.privacyScreen = $('#privacy-screen-toggle').checked;
-    s.fileDownloadDir = $('#file-dir-input').value;
-    s.terminalEnabled = $('#terminal-enabled').checked;
-    s.terminalShell = $('#terminal-shell').value;
     s.language = $('#settings-language').value;
     s.theme = $('#settings-theme').value;
-    var tracker = $('#settings-tracker');
-    if (tracker) s.tracker = (tracker.value || '').trim();
-    var deviceId = $('#settings-device-id');
-    if (deviceId) s.deviceId = (deviceId.value || '').trim();
-    var deviceName = $('#settings-device-name');
-    if (deviceName) s.deviceName = deviceName.value || '';
+    s.quality = $('#settings-quality').value;
+    s.bitrate = parseInt($('#settings-bitrate').value, 10) || 8;
+    s.framerate = parseInt($('#settings-framerate').value, 10) || 30;
+    s.accessCode = ($('#settings-access-code').value || '').trim();
+    s.tracker = ($('#settings-tracker').value || '').trim();
+    s.deviceId = ($('#settings-device-id').value || '').trim();
+    s.deviceName = $('#settings-device-name').value || '';
   }
 
-  /** Push `state.settings` back into the settings form. */
+  /** Push the settings back into the settings drawer. */
   function writeSettingsForm() {
     var s = state.settings;
-    $('#quality-select').value = s.quality;
-    $('#bitrate-slider').value = s.bitrate;
+    $('#settings-language').value = s.language || 'zh';
+    $('#settings-theme').value = s.theme || 'dark';
+    $('#settings-quality').value = s.quality || 'auto';
+    $('#settings-bitrate').value = s.bitrate;
     $('#bitrate-value').textContent = s.bitrate + ' Mbps';
-    $('#framerate-slider').value = s.framerate;
+    $('#settings-framerate').value = s.framerate;
     $('#framerate-value').textContent = s.framerate + ' FPS';
-    $('#encoder-select').value = s.encoder;
-    $('#audio-enabled').checked = !!s.audioEnabled;
-    $('#audio-quality').value = s.audioQuality;
-    $('#keymap-select').value = s.keymapPreset;
-    $('#gamepad-enabled-setting').checked = !!s.gamepadEnabled;
-    $('#privacy-blackout').checked = !!s.privacyBlackout;
-    $('#privacy-autolock').checked = !!s.privacyAutoLock;
-    $('#screensaver-select').value = s.screensaver;
-    $('#privacy-screen-toggle').checked = !!s.privacyScreen;
-    $('#file-dir-input').value = s.fileDownloadDir;
-    $('#terminal-enabled').checked = !!s.terminalEnabled;
-    $('#terminal-shell').value = s.terminalShell;
-    $('#settings-language').value = s.language;
-    $('#settings-theme').value = s.theme;
-    var tracker = $('#settings-tracker');
-    if (tracker) tracker.value = s.tracker || '';
-    var deviceId = $('#settings-device-id');
-    if (deviceId) deviceId.value = s.deviceId || '';
-    var deviceName = $('#settings-device-name');
-    if (deviceName) deviceName.value = s.deviceName || '';
-    renderPorts();
+    $('#settings-access-code').value = s.accessCode || '';
+    $('#settings-tracker').value = s.tracker || '';
+    $('#settings-device-id').value = s.deviceId || '';
+    $('#settings-device-name').value = s.deviceName || '';
+    renderSavedCodes();
   }
 
   function openSettings() {
     writeSettingsForm();
-    hide($('#context-menu'));
     show($('#settings-panel'));
-    state.settingsOpen = true;
-    syncDrawerClass();
+    var scroll = $('#settings-scroll');
+    if (scroll) scroll.scrollTop = 0;
   }
 
-  function closeSettings() {
+  function closeDrawer() {
     hide($('#settings-panel'));
-    state.settingsOpen = false;
-    syncDrawerClass();
+    hide($('#log-panel'));
   }
 
   function saveSettings() {
@@ -484,84 +344,148 @@
     applyTheme(state.settings.theme, false);
     i18n.setLocale(state.settings.language);
     applyI18n();
-    refreshQualityDisplay();
-    syncToolbarDensity();
-    fillShareForm();
-    refreshTrackerNote();
-    writeLog('info', '设置已保存');
+    updateLangLabel();
+    renderMyDevice();
+    renderSavedCodes();
+    paintStatus();
     toast(t('toast.settingsSaved'), 'success');
   }
 
-  function resetSettings() {
-    var lang = state.settings.language;
-    state.settings = clone(DEFAULT_SETTINGS);
-    state.settings.language = lang;
-    writeSettingsForm();
-    persistSettings();
-    applyTheme(state.settings.theme, false);
-    applyI18n();
-    toast(t('toast.settingsReset'), 'success');
-  }
-
-  /* ---- port mapping rows ---- */
-
-  function renderPorts() {
-    var host = $('#port-list');
+  /** The codes this computer has remembered, one row each. */
+  function renderSavedCodes() {
+    var host = $('#saved-codes-list');
     if (!host) return;
     host.innerHTML = '';
-    var mappings = state.settings.portMappings || [];
-    var empty = $('#port-empty');
-    if (empty) empty.hidden = mappings.length > 0;
 
-    mappings.forEach(function (m, index) {
-      var row = el('div', 'port-row');
-      row.appendChild(numberField(m.localPort, 'local', index));
-      row.appendChild(el('span', 'port-arrow', '→'));
-      row.appendChild(numberField(m.remotePort, 'remote', index));
-      row.appendChild(textField(m.remoteHost, 'host', index));
-      var del = el('button', 'icon-btn icon-btn-sm port-del');
+    var codes = state.settings.savedCodes || {};
+    var ids = Object.keys(codes);
+    var empty = $('#saved-codes-empty');
+    if (empty) empty.hidden = ids.length > 0;
+
+    ids.forEach(function (id) {
+      var row = el('div', 'saved-code-row');
+      row.appendChild(el('span', 'saved-code-id mono', id));
+      row.appendChild(el('span', 'saved-code-value mono', codes[id]));
+
+      var del = el('button', 'icon-btn icon-btn-sm');
       del.type = 'button';
       del.innerHTML = icons.icon('trash', { size: 15 });
+      del.setAttribute('title', t('common.remove'));
       del.addEventListener('click', function () {
-        state.settings.portMappings.splice(index, 1);
-        renderPorts();
+        delete state.settings.savedCodes[id];
+        persistSettings();
+        renderSavedCodes();
       });
       row.appendChild(del);
+
       host.appendChild(row);
     });
   }
 
-  function numberField(value, kind, index) {
-    var input = el('input', 'input input-sm');
-    input.type = 'number';
-    input.min = '1';
-    input.max = '65535';
-    input.value = value == null ? '' : value;
-    input.setAttribute('aria-label', kind);
-    input.addEventListener('input', function () {
-      var m = state.settings.portMappings[index];
-      if (!m) return;
-      if (kind === 'local') m.localPort = parseInt(input.value, 10) || 0;
-      if (kind === 'remote') m.remotePort = parseInt(input.value, 10) || 0;
-    });
-    return input;
+  /* ==================================================================
+   * This computer
+   * ================================================================== */
+
+  function renderMyDevice() {
+    var s = state.settings;
+
+    setText($('#my-device-id'), s.deviceId || '—');
+    setText($('#my-device-name'), s.deviceName || '—');
+
+    var tracker = s.tracker || '—';
+    if (state.trackerInfo && state.trackerInfo.lanUrl) tracker = state.trackerInfo.lanUrl;
+    setText($('#my-tracker-value'), tracker);
+
+    var statusText = t('home.share.stopped');
+    var dotClass = '';
+    if (state.hostState === 'sharing') { statusText = t('home.share.sharing'); dotClass = ' is-online'; }
+    else if (state.hostState === 'waiting') { statusText = t('home.share.waiting'); }
+    else if (state.hostState === 'warning') { statusText = t('home.share.warning'); dotClass = ' is-warning'; }
+    setText($('#my-status-text'), statusText);
+
+    var dot = $('#my-status-dot');
+    if (dot) dot.className = 'status-dot' + dotClass;
+
+    var accessRow = $('#my-access-code-row');
+    if (accessRow) accessRow.hidden = !state.sharing;
+    setText($('#my-access-code-value'), s.accessCode || t('home.myDevice.accessCodeNone'));
+
+    var verifyRow = $('#my-verify-row');
+    if (verifyRow) verifyRow.hidden = !state.hostVerifyCode;
+    setText($('#my-verify-value'), state.hostVerifyCode || '—');
+
+    var card = $('#my-device-card');
+    if (card) card.classList.toggle('is-sharing', !!state.sharing);
+
+    var label = $('#share-toggle-label');
+    if (label) label.textContent = state.sharing ? t('home.myDevice.stopShare') : t('home.myDevice.share');
+
+    var button = $('#share-toggle');
+    if (button) {
+      button.classList.toggle('is-on', !!state.sharing);
+      var iconNode = button.querySelector('.icon');
+      if (iconNode) {
+        iconNode.setAttribute('data-icon', state.sharing ? 'stop-circle' : 'play');
+        hydrateIcons(button);
+      }
+    }
+
+    setText($('#share-note'), state.sharing ? t('home.myDevice.shareHint') : '');
   }
 
-  function textField(value, kind, index) {
-    var input = el('input', 'input input-sm');
-    input.type = 'text';
-    input.value = value == null ? '' : value;
-    input.setAttribute('aria-label', kind);
-    input.addEventListener('input', function () {
-      var m = state.settings.portMappings[index];
-      if (!m) return;
-      if (kind === 'host') m.remoteHost = input.value;
+  function toggleShare() {
+    if (state.sharing) {
+      bridge.call('stopHost').then(function () {
+        state.sharing = false;
+        state.hostState = 'stopped';
+        state.hostVerifyCode = '';
+        renderMyDevice();
+        toast(t('toast.hostStopped'), 'info');
+      }).catch(function (error) {
+        toast(errorMessage(error), 'error');
+      });
+      return;
+    }
+
+    bridge.call('startHost').then(function (result) {
+      state.sharing = true;
+      state.hostState = 'waiting';
+      if (result && result.deviceId) state.settings.deviceId = result.deviceId;
+      renderMyDevice();
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
     });
-    return input;
+  }
+
+  function copyText(text) {
+    if (!text) return;
+    if (global.navigator && global.navigator.clipboard && global.navigator.clipboard.writeText) {
+      global.navigator.clipboard.writeText(text).then(function () {
+        toast(t('toast.copied'), 'success');
+      }).catch(function () {
+        legacyCopy(text);
+      });
+      return;
+    }
+    legacyCopy(text);
+  }
+
+  function legacyCopy(text) {
+    var field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', 'readonly');
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    var done = false;
+    try { done = document.execCommand('copy'); } catch (e) { done = false; }
+    document.body.removeChild(field);
+    toast(done ? t('toast.copied') : t('common.copyFailed'), done ? 'success' : 'warning');
   }
 
   /* ==================================================================
-   * Connect view
+   * The list of other computers
    * ================================================================== */
 
   function renderDevices() {
@@ -570,29 +494,19 @@
     if (!list) return;
 
     var query = state.deviceQuery.trim().toLowerCase();
-    var devices = state.devices.filter(function (d) {
-      if (state.deviceTab === 'online' && !d.online) return false;
-      if (state.deviceTab === 'favorite' && !d.favorite) return false;
-      if (query) {
-        var hay = (d.name + ' ' + d.id + ' ' + d.platform).toLowerCase();
-        if (hay.indexOf(query) === -1) return false;
-      }
-      return true;
+    var devices = state.devices.filter(function (device) {
+      if (!query) return true;
+      var hay = ((device.name || '') + ' ' + (device.id || '')).toLowerCase();
+      return hay.indexOf(query) !== -1;
     });
 
     list.innerHTML = '';
 
     if (!devices.length) {
       show(empty);
-      var title = $('#device-empty-title');
-      var hint = $('#device-empty-hint');
-      if (title) {
-        title.textContent = query ? t('connect.search.empty')
-          : state.deviceTab === 'favorite' ? t('connect.empty.favorite')
-          : state.deviceTab === 'online' ? t('connect.empty.online')
-          : t('connect.empty.recent');
-      }
-      if (hint) hint.textContent = query ? '' : t('connect.empty.hint');
+      setText($('#device-empty-title'), query ? t('home.remote.searchEmpty') : t('home.remote.empty'));
+      setText($('#device-empty-hint'), query ? '' : t('home.remote.emptyHint'));
+      hide($('#device-note'));
       return;
     }
     hide(empty);
@@ -600,96 +514,61 @@
     devices.forEach(function (device) {
       list.appendChild(deviceRow(device));
     });
+
+    // One device and it is this computer: say so, so that an empty
+    // list is not read as a broken one.
+    var onlySelf = devices.length === 1 && isSelf(devices[0]);
+    var note = $('#device-note');
+    if (note) {
+      note.hidden = !onlySelf;
+      if (onlySelf) note.textContent = t('home.remote.onlySelf');
+    }
+  }
+
+  function isSelf(device) {
+    return !!(device && device.id && state.settings.deviceId && device.id === state.settings.deviceId);
   }
 
   function deviceRow(device) {
     var row = el('div', 'device-row');
     row.setAttribute('role', 'listitem');
+    row.tabIndex = 0;
 
     var avatar = el('div', 'device-avatar');
-    avatar.appendChild(platformIcon(device.platform));
+    var iconNode = el('span', 'icon');
+    iconNode.innerHTML = icons.icon('monitor', { size: 20 });
+    avatar.appendChild(iconNode);
 
     var main = el('div', 'device-main');
     var nameLine = el('div', 'device-name-line');
-    nameLine.appendChild(el('span', 'device-name', device.name));
+    nameLine.appendChild(el('span', 'device-name', device.name || device.id || ''));
+
+    if (isSelf(device)) nameLine.appendChild(el('span', 'badge', t('home.remote.self')));
 
     var status = el('span', 'device-status' + (device.online ? ' is-online' : ''));
     status.appendChild(el('i', 'status-dot'));
-    status.appendChild(el('span', '', device.online ? t('connect.device.online') : t('connect.device.offline')));
+    status.appendChild(el('span', '', device.online ? t('home.remote.online') : t('home.remote.offline')));
     nameLine.appendChild(status);
-
     main.appendChild(nameLine);
 
-    var meta = el('div', 'device-meta');
-    meta.appendChild(el('span', 'device-id', device.id));
-    meta.appendChild(el('span', 'meta-sep', '·'));
-    meta.appendChild(el('span', 'device-platform', device.platform));
-    if (device.online && device.latency != null) {
-      meta.appendChild(el('span', 'meta-sep', '·'));
-      meta.appendChild(el('span', 'device-latency', t('connect.device.latency', { ms: device.latency })));
-    } else if (device.lastSeen) {
-      meta.appendChild(el('span', 'meta-sep', '·'));
-      meta.appendChild(el('span', 'device-seen', t('connect.device.lastSeen', { time: formatTime(device.lastSeen) })));
-    }
-    main.appendChild(meta);
-
+    main.appendChild(el('div', 'device-meta', device.id || ''));
     row.appendChild(avatar);
     row.appendChild(main);
 
-    var actions = el('div', 'device-actions');
-
-    var fav = el('button', 'icon-btn icon-btn-sm' + (device.favorite ? ' is-fav' : ''));
-    fav.type = 'button';
-    fav.innerHTML = icons.icon('star', { size: 16 });
-    fav.setAttribute('title', device.favorite ? t('connect.device.unfavorite') : t('connect.device.favorite'));
-    fav.addEventListener('click', function (e) {
-      e.stopPropagation();
-      device.favorite = !device.favorite;
-      fav.classList.toggle('is-fav', device.favorite);
-      fav.innerHTML = icons.icon('star', { size: 16 });
-      renderDevices();
-    });
-    actions.appendChild(fav);
-
-    var connect = el('button', 'btn btn-secondary btn-sm device-connect');
-    connect.type = 'button';
-    connect.textContent = t('connect.device.connect');
-    connect.disabled = !device.online;
-    if (!device.online) connect.classList.add('is-disabled');
-    connect.addEventListener('click', function (e) {
-      e.stopPropagation();
-      startConnect(device.id);
-    });
-    actions.appendChild(connect);
-
-    row.appendChild(actions);
-
-    row.addEventListener('click', function () {
-      if (device.online) startConnect(device.id);
-    });
+    function go() { requestConnect(device.id); }
+    row.addEventListener('click', go);
     row.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && device.online) startConnect(device.id);
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      go();
     });
-    row.tabIndex = 0;
+
     return row;
   }
 
-  function platformIcon(platform) {
-    var name = 'monitor';
-    var p = (platform || '').toLowerCase();
-    if (p.indexOf('windows') !== -1) name = 'display';
-    else if (p.indexOf('linux') !== -1) name = 'server';
-    else if (p.indexOf('mac') !== -1 || p.indexOf('os x') !== -1) name = 'laptop';
-    else if (p.indexOf('android') !== -1 || p.indexOf('ios') !== -1) name = 'smartphone';
-    var span = el('span', 'icon');
-    span.innerHTML = icons.icon(name, { size: 20 });
-    return span;
-  }
-
   function loadDevices() {
-    // MOCK: real device list comes from the tracker + local history.
     return bridge.call('listDevices').then(function (devices) {
-      state.devices = devices || [];
+      state.devices = Array.isArray(devices) ? devices : [];
       renderDevices();
     }).catch(function () {
       state.devices = [];
@@ -697,94 +576,169 @@
     });
   }
 
-  function startConnect(deviceId) {
-    if (state.connecting) {
-      toast(t('connect.error.busy'), 'warning');
-      return;
-    }
-    var id = (deviceId || ($('#device-id-input') ? $('#device-id-input').value : '') || '').trim();
-    if (!id) {
-      toast(t('connect.error.empty'), 'warning');
-      return;
-    }
-    if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) {
-      toast(t('connect.error.invalid'), 'warning');
-      return;
-    }
+  /* ==================================================================
+   * The access code
+   * ================================================================== */
 
-    state.connecting = true;
-    setConnectButtonBusy(true);
-    setConnectionStatus('punching');
+  /**
+   * Ask for the access code of a device.
+   * @returns {Promise<{code: string, remember: boolean}|null>}
+   */
+  function openAccessDialog(deviceId) {
+    var modal = $('#access-modal');
+    var input = $('#access-input');
+    var remember = $('#access-remember');
+    var label = $('#access-device');
+    var hint = $('#access-hint');
+    var title = $('#access-title');
 
-    // MOCK: the real flow is tracker lookup -> NAT hole punch -> handshake.
-    bridge.call('connect', { deviceId: id }).then(function () {
-      state.connecting = false;
-      setConnectButtonBusy(false);
-      enterRemoteView(id);
-    }).catch(function () {
-      state.connecting = false;
-      setConnectButtonBusy(false);
-      setConnectionStatus('failed');
-      toast(t('connect.error.timeout'), 'error');
+    var device = findDevice(deviceId);
+    var name = device && device.name ? device.name : deviceId;
+
+    if (label) label.textContent = t('access.device') + ': ' + name;
+    if (title) title.textContent = t('access.title');
+    if (input) input.value = '';
+    if (remember) remember.checked = true;
+    if (hint) hint.textContent = bridge.isNative() ? '' : t('access.mockHint');
+
+    show(modal);
+    if (input) setTimeout(function () { input.focus(); }, 30);
+
+    return new Promise(function (resolve) {
+      state.accessResolver = resolve;
     });
   }
 
-  function setConnectButtonBusy(busy) {
-    var btn = $('#connect-btn');
-    var label = $('#connect-btn-label');
-    if (btn) btn.classList.toggle('is-busy', busy);
-    if (label) label.textContent = busy ? t('connect.connecting') : t('connect.button');
+  function closeAccessDialog(answer) {
+    hide($('#access-modal'));
+    var resolve = state.accessResolver;
+    state.accessResolver = null;
+    if (resolve) resolve(answer);
+  }
+
+  /**
+   * Connect to a device.  A code that was remembered is used straight
+   * away; otherwise the person is asked for it.
+   */
+  function requestConnect(deviceId) {
+    var id = (deviceId || '').trim();
+    if (!id) return;
+
+    var device = findDevice(id);
+    if (device && device.online === false) {
+      toast(t('home.remote.offlineToast'), 'warning');
+      return;
+    }
+
+    var saved = state.settings.savedCodes ? state.settings.savedCodes[id] : null;
+    if (saved) {
+      connectTo(id, saved);
+      return;
+    }
+
+    openAccessDialog(id).then(function (answer) {
+      if (!answer) return;
+      if (answer.remember && answer.code) {
+        state.settings.savedCodes[id] = answer.code;
+        persistSettings();
+        renderSavedCodes();
+        toast(t('toast.codeSaved'), 'success');
+      }
+      connectTo(id, answer.code);
+    });
+  }
+
+  function connectTo(deviceId, accessCode) {
+    if (state.connecting) return;
+    state.connecting = true;
+    setConnectionStatus('connecting');
+
+    var button = $('#device-connect-btn');
+    if (button) button.disabled = true;
+
+    bridge.call('connect', { deviceId: deviceId, accessCode: accessCode || '' }).then(function () {
+      state.connecting = false;
+      if (button) button.disabled = false;
+      enterRemoteView(deviceId);
+    }).catch(function (error) {
+      state.connecting = false;
+      if (button) button.disabled = false;
+      setConnectionStatus('idle');
+      var code = error && error.code;
+      if (code === 'accessDenied') toast(t('access.wrong'), 'error');
+      else if (code === 'noAccessCode') toast(t('access.missing'), 'error');
+      else toast(errorMessage(error), 'error');
+    });
+  }
+
+  function errorMessage(error) {
+    if (!error) return t('access.failed');
+    if (error.code === 'accessDenied') return t('access.wrong');
+    if (error.code === 'noAccessCode') return t('access.missing');
+    if (error.message) return error.message;
+    return t('access.failed');
   }
 
   /* ==================================================================
-   * Views
+   * The remote picture
    * ================================================================== */
 
   function enterRemoteView(deviceId) {
     state.view = 'remote';
-    document.getElementById('app').setAttribute('data-view', 'remote');
-    var connectView = $('#view-connect');
-    var remoteView = $('#view-remote');
-    if (connectView) connectView.classList.remove('is-active');
-    if (remoteView) remoteView.classList.add('is-active');
-    hide($('#connect-hint'));
+    $('#app').setAttribute('data-view', 'remote');
+    $('#view-list').classList.remove('is-active');
+    $('#view-remote').classList.add('is-active');
 
     state.connected = true;
     setConnectionStatus('connected');
     hide($('#stage-placeholder'));
-    var device = findDevice(deviceId);
-    toast(t('toast.connected', { name: device ? device.name : deviceId }), 'success');
+    var toolbar = $('#remote-toolbar');
+    if (toolbar) toolbar.hidden = false;
 
-    // MOCK: fake frames until the real decoder is wired in.
+    var device = findDevice(deviceId);
+    toast(t('toast.connected', { name: device && device.name ? device.name : deviceId }), 'success');
+
+    // Without the real backend there is no video, so the mock paints
+    // something on the canvas instead.
     var canvas = $('#remote-canvas');
     if (canvas && !bridge.isNative()) bridge.mock.startFrames(canvas);
 
     bridge.call('listScreens').then(function (screens) {
-      state.screens = screens || [];
+      state.screens = normaliseScreens(screens);
       renderScreenMenu();
-      applyScreen(0);
-    });
+    }).catch(function () { /* no screens yet */ });
 
-    startStatusPoll();
     var stage = $('#remote-stage');
     if (stage) stage.focus();
   }
 
   function leaveRemoteView() {
-    state.view = 'connect';
-    document.getElementById('app').setAttribute('data-view', 'connect');
-    var connectView = $('#view-connect');
-    var remoteView = $('#view-remote');
-    if (connectView) connectView.classList.add('is-active');
-    if (remoteView) remoteView.classList.remove('is-active');
-    show($('#connect-hint'));
-    show($('#stage-placeholder'));
+    state.view = 'list';
+    $('#app').setAttribute('data-view', 'list');
+    $('#view-remote').classList.remove('is-active');
+    $('#view-list').classList.add('is-active');
 
     state.connected = false;
-    stopStatusPoll();
+    state.decoder = null;
+    state.verifyCode = '';
+    state.resolution = null;
     bridge.mock.stopFrames();
-    setConnectionStatus('idle');
-    renderDevices();
+    show($('#stage-placeholder'));
+    renderVerify();
+
+    var list = $('#list-main');
+    if (list) list.scrollTop = 0;
+    loadDevices();
+    renderMyDevice();
+  }
+
+  function disconnect() {
+    var done = function () {
+      leaveRemoteView();
+      toast(t('toast.disconnected'), 'info');
+    };
+    if (!state.connected) { done(); return; }
+    bridge.call('disconnect').then(done).catch(done);
   }
 
   function findDevice(id) {
@@ -794,915 +748,53 @@
     return null;
   }
 
-  /* ==================================================================
-   * Connection status
-   * ================================================================== */
-
   function setConnectionStatus(status) {
     state.connectionStatus = status;
-    var banner = $('#status-banner');
-    var text = $('#status-text');
-    var dot = $('#status-dot');
-    var overlay = $('#reconnect-overlay');
-    if (!banner) return;
-
-    var labels = {
-      idle: t('status.idle'),
-      punching: t('status.punching'),
-      handshaking: t('status.handshaking'),
-      connected: t('status.connected'),
-      reconnecting: t('status.reconnecting'),
-      closed: t('status.closed'),
-      failed: t('status.failed')
-    };
-
-    if (status === 'connected') {
-      hide(banner);
-      hide(overlay);
-      if (dot) dot.className = 'status-dot is-ok';
-    } else if (status === 'idle' || status === 'closed') {
-      hide(banner);
-      hide(overlay);
-    } else {
-      show(banner);
-      if (text) text.textContent = labels[status] || status;
-      if (dot) dot.className = 'status-dot is-' + (status === 'failed' ? 'err' : 'busy');
-      if (status === 'reconnecting') {
-        show(overlay);
-        var rt = $('#reconnect-text');
-        if (rt) rt.textContent = t('status.reconnecting');
-      } else {
-        hide(overlay);
+    var placeholder = $('#stage-placeholder');
+    if (placeholder) {
+      var text = placeholder.querySelector('p');
+      if (text) {
+        if (status === 'connecting') text.textContent = t('remote.connecting');
+        else if (status === 'connected') text.textContent = t('remote.placeholder');
+        else text.textContent = t('remote.placeholder');
       }
+      if (status === 'connected') hide(placeholder);
     }
   }
 
-  var statusTimer = null;
-
-  function startStatusPoll() {
-    stopStatusPoll();
-    // MOCK: a real backend pushes these numbers with every frame.
-    statusTimer = setInterval(function () {
-      if (!state.connected) return;
-      var jitter = Math.round((Math.random() - 0.5) * 6);
-      state.latency = clamp((state.latency || 18) + jitter, 4, 400);
-      state.bitrate = Math.max(0.5, (state.bitrate || 8.4) + (Math.random() - 0.5) * 0.6);
-      state.framerate = clamp(Math.round((state.framerate || 60) + (Math.random() - 0.5) * 2), 1, state.settings.framerate || 60);
-      paintStatus();
-    }, 1000);
-  }
-
-  function stopStatusPoll() {
-    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+  function renderVerify() {
+    var box = $('#remote-verify');
+    if (box) box.hidden = !state.verifyCode;
+    setText($('#remote-verify-code'), state.verifyCode || '------');
+    setText($('#remote-verify-hint'), t('remote.verify.hint'));
   }
 
   function paintStatus() {
-    var q = $('#status-quality');
-    var f = $('#status-framerate');
-    var b = $('#status-bitrate');
-    var l = $('#status-latency');
-    var r = $('#status-resolution');
-
-    if (q) q.textContent = t('status.quality.' + state.settings.quality) || state.settings.quality;
-    if (f) f.textContent = t('status.framerate', { fps: state.framerate || state.settings.framerate });
-    if (b) b.textContent = t('status.bitrate', { mbps: (state.bitrate || 0).toFixed(1) });
-    if (l) l.textContent = t('status.latency', { ms: state.latency == null ? '—' : state.latency });
-    if (r && state.resolution) r.textContent = t('status.resolution', { w: state.resolution.width, h: state.resolution.height });
-  }
-
-  function refreshQualityDisplay() { paintStatus(); }
-
-  /* ==================================================================
-   * Remote toolbar
-   * ================================================================== */
-
-  function renderScreenMenu() {
-    var menu = $('#screen-menu');
-    if (!menu) return;
-    menu.innerHTML = '';
-
-    state.screens.forEach(function (screen) {
-      var item = el('button', 'menu-item menu-item-screen');
-      item.type = 'button';
-      var ic = el('span', 'icon');
-      ic.innerHTML = icons.icon('monitor', { size: 16 });
-      item.appendChild(ic);
-      var label = el('span', 'screen-label');
-      label.appendChild(el('span', 'screen-name', screen.name));
-      var sub = el('span', 'screen-sub', screen.width + '×' + screen.height + (screen.scaleFactor && screen.scaleFactor !== 1 ? '  @' + screen.scaleFactor + 'x' : ''));
-      label.appendChild(sub);
-      if (screen.primary) label.appendChild(el('span', 'badge', t('screen.primary')));
-      item.appendChild(label);
-      if (screen.index === state.screenIndex) item.classList.add('is-active');
-      item.addEventListener('click', function () {
-        switchScreen(screen.index);
-        closeMenus();
-      });
-      menu.appendChild(item);
-    });
-
-    var sep = el('div', 'menu-sep');
-    menu.appendChild(sep);
-
-    var virt = el('button', 'menu-item');
-    virt.type = 'button';
-    var vic = el('span', 'icon');
-    vic.innerHTML = icons.icon('layers', { size: 16 });
-    virt.appendChild(vic);
-    virt.appendChild(el('span', '', state.virtualScreen ? t('screen.virtual.remove') : t('screen.virtual.create')));
-    virt.addEventListener('click', function () {
-      toggleVirtualScreen();
-      closeMenus();
-    });
-    menu.appendChild(virt);
-  }
-
-  function switchScreen(index) {
-    state.screenIndex = index;
-    bridge.call('switchScreen', { index: index }).then(function () {
-      applyScreen(index);
-      var screen = state.screens[index];
-      toast(t('toast.screenSwitched', { name: screen ? screen.name : '#' + index }), 'info');
-    });
-  }
-
-  function applyScreen(index) {
-    var screen = state.screens[index];
-    if (!screen) return;
-    state.resolution = { width: screen.width, height: screen.height };
-    var canvas = $('#remote-canvas');
-    if (canvas) {
-      canvas.width = screen.width;
-      canvas.height = screen.height;
+    var quality = state.settings.quality;
+    var qualityText = '—';
+    if (quality && t('settings.quality.' + quality) !== 'settings.quality.' + quality) {
+      qualityText = t('settings.quality.' + quality);
     }
-    paintStatus();
-    renderScreenMenu();
+    setText($('#stat-quality'), qualityText);
+    setText($('#stat-framerate'), state.framerate === null ? '—' : state.framerate + ' FPS');
+    setText($('#stat-bitrate'), state.bitrate === null ? '—' : state.bitrate + ' Mbps');
+    setText($('#stat-latency'), state.latency === null ? '—' : Math.round(state.latency) + ' ms');
+    setText($('#stat-resolution'), state.resolution
+      ? state.resolution.width + '×' + state.resolution.height
+      : '—');
   }
-
-  function toggleVirtualScreen() {
-    state.virtualScreen = !state.virtualScreen;
-    var btn = $('#virtual-screen-btn');
-    if (btn) btn.setAttribute('aria-pressed', state.virtualScreen ? 'true' : 'false');
-    if (state.virtualScreen) {
-      state.screens = state.screens.concat([{
-        index: state.screens.length, name: 'Virtual Display', width: 1920, height: 1080, scaleFactor: 1, primary: false, virtual: true
-      }]);
-      toast(t('toast.virtualScreenCreated'), 'success');
-    } else {
-      state.screens = state.screens.filter(function (s) { return !s.virtual; });
-      toast(t('toast.virtualScreenRemoved'), 'info');
-    }
-    renderScreenMenu();
-  }
-
-  /**
-   * The toolbar carries text labels next to the icons. When the window
-   * is too narrow for them, drop to icons only and fall back to the
-   * tooltips (the title attributes are already set on every button).
-   */
-  function syncToolbarDensity() {
-    var bar = $('#remote-toolbar');
-    if (!bar) return;
-    var actions = $('.toolbar-actions', bar);
-    if (!actions) return;
-    var wasCompact = bar.classList.contains('is-compact');
-    bar.classList.remove('is-compact');
-    // Reading a size makes the browser lay the toolbar out again, so
-    // the measurement below is of the toolbar with its labels on.  Without
-    // it the old size is measured and the toolbar stays in the icon
-    // mode even when there is room for the labels.
-    if (wasCompact) void actions.offsetWidth;
-    // Measure the part that scrolls, because that is the part that has
-    // to fit.  The state and the disconnect button have their own room.
-    if (actions.scrollWidth > actions.clientWidth + 1) {
-      bar.classList.add('is-compact');
-    }
-  }
-
-  function setToolbarVisible(visible) {
-    state.toolbarVisible = visible;
-    var bar = $('#remote-toolbar');
-    if (!bar) return;
-    bar.classList.toggle('is-hidden', !visible);
-    var toggleBtn = $('#toolbar-toggle');
-    if (toggleBtn) {
-      toggleBtn.innerHTML = icons.icon(visible ? 'chevron-up' : 'chevron-down', { size: 18 });
-      toggleBtn.setAttribute('title', visible ? t('remote.toolbar.hide') : t('remote.toolbar.show'));
-    }
-  }
-
-  function setCursorStyle(style) {
-    state.cursorStyle = style;
-    var stage = $('#remote-stage');
-    if (!stage) return;
-    stage.style.cursor = style === 'none' ? 'none' : style;
-    var icon = $('#cursor-icon');
-    var map = { default: 'mouse-pointer', pointer: 'hand', crosshair: 'crosshair', text: 'cursor-text', none: 'eye-off' };
-    if (icon) {
-      icon.setAttribute('data-icon', map[style] || 'mouse-pointer');
-      hydrateIcons(icon.parentNode);
-    }
-  }
-
-  /* ==================================================================
-   * Remote input capture
-   *
-   * The shapes mirror `InputEvent` in skycremote-core/src/protocol.rs.
-   * ================================================================== */
-
-  var KEY_CODES = {
-    Backspace: 8, Tab: 9, Enter: 13, ShiftLeft: 16, ShiftRight: 16, ControlLeft: 17, ControlRight: 17,
-    AltLeft: 18, AltRight: 18, CapsLock: 20, Escape: 27, Space: 32, PageUp: 33, PageDown: 34,
-    End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
-    MetaLeft: 91, MetaRight: 92, ContextMenu: 93, NumLock: 144, ScrollLock: 145, Pause: 19
-  };
-
-  function keyCodeFor(event) {
-    if (KEY_CODES[event.key] !== undefined) return KEY_CODES[event.key];
-    if (/^F\d{1,2}$/.test(event.key)) return 111 + parseInt(event.key.slice(1), 10);
-    if (event.key.length === 1) {
-      var upper = event.key.toUpperCase();
-      var code = upper.charCodeAt(0);
-      if (code >= 48 && code <= 57) return code;      // 0-9
-      if (code >= 65 && code <= 90) return code;      // A-Z
-      return 0;
-    }
-    return 0;
-  }
-
-  /** Map a browser pointer event into remote-screen pixel coordinates. */
-  function pointerToRemote(event) {
-    var canvas = $('#remote-canvas');
-    if (!canvas) return { x: 0, y: 0 };
-    var rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return { x: 0, y: 0 };
-    var x = (event.clientX - rect.left) / rect.width * canvas.width;
-    var y = (event.clientY - rect.top) / rect.height * canvas.height;
-    return {
-      x: Math.round(clamp(x, 0, canvas.width)),
-      y: Math.round(clamp(y, 0, canvas.height))
-    };
-  }
-
-  function sendInput(payload) {
-    // MOCK: a real backend sends this over the wire as `Message::Input`.
-    return bridge.call('sendInput', payload);
-  }
-
-  function wireRemoteInput() {
-    var stage = $('#remote-stage');
-    if (!stage) return;
-
-    stage.addEventListener('keydown', function (e) {
-      if (!state.connected) return;
-      if (isTypingTarget(e.target)) return;
-      e.preventDefault();
-
-      if (state.keymapRecording) {
-        completeKeymapRecording(e);
-        return;
-      }
-
-      var code = keyCodeFor(e);
-      if (e.key.length === 1) {
-        // A character is sent as itself.  Sending it as a key as well
-        // would type it twice, and typing it by key would depend on
-        // the keyboard layout of the machine on the other end.
-        sendInput({ type: 'Text', text: e.key });
-      } else {
-        sendInput({ type: 'KeyDown', key: code });
-      }
-    });
-
-    stage.addEventListener('keyup', function (e) {
-      if (!state.connected) return;
-      if (isTypingTarget(e.target)) return;
-      e.preventDefault();
-      // Characters went out as characters, so there is no key to lift.
-      if (e.key.length === 1) return;
-      sendInput({ type: 'KeyUp', key: keyCodeFor(e) });
-    });
-
-    stage.addEventListener('mousemove', function (e) {
-      if (!state.connected) return;
-      var p = pointerToRemote(e);
-      sendInput({ type: 'MouseMove', x: p.x, y: p.y });
-    });
-
-    stage.addEventListener('mousedown', function (e) {
-      if (!state.connected) return;
-      e.preventDefault();
-      var p = pointerToRemote(e);
-      var button = e.button === 1 ? 1 : (e.button === 2 ? 2 : 0);
-      sendInput({ type: 'MouseDown', button: button, x: p.x, y: p.y });
-    });
-
-    stage.addEventListener('mouseup', function (e) {
-      if (!state.connected) return;
-      var p = pointerToRemote(e);
-      var button = e.button === 1 ? 1 : (e.button === 2 ? 2 : 0);
-      sendInput({ type: 'MouseUp', button: button, x: p.x, y: p.y });
-    });
-
-    stage.addEventListener('wheel', function (e) {
-      if (!state.connected) return;
-      e.preventDefault();
-      var p = pointerToRemote(e);
-      // 浏览器可能给像素（deltaMode 0）、行（1）、页（2）。后端按像素算，
-      // 不换算的话 Firefox 那种「行」的量会小得看起来像没反应。
-      var scale =
-        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 16 * 25 : 1;
-      sendInput({
-        type: 'Scroll',
-        dx: e.deltaX * scale,
-        dy: e.deltaY * scale,
-        x: p.x,
-        y: p.y
-      });
-    }, { passive: false });
-
-    stage.addEventListener('contextmenu', function (e) {
-      e.preventDefault();
-      showContextMenu(e.clientX, e.clientY);
-    });
-
-    // Clipboard: Ctrl/Cmd+C and Ctrl/Cmd+V.
-    document.addEventListener('copy', function (e) {
-      if (!state.connected || !isTypingTarget(e.target)) return;
-      var text = (e.clipboardData || window.clipboardData).getData('text');
-      if (text) sendInput({ type: 'Clipboard', data: text });
-    });
-
-    document.addEventListener('paste', function (e) {
-      if (!state.connected || !isTypingTarget(e.target)) return;
-      var text = (e.clipboardData || window.clipboardData).getData('text');
-      if (text) sendInput({ type: 'Clipboard', data: text });
-    });
-  }
-
-  function isTypingTarget(node) {
-    if (!node) return false;
-    var tag = (node.tagName || '').toLowerCase();
-    return tag === 'input' || tag === 'textarea' || node.isContentEditable;
-  }
-
-  /* ==================================================================
-   * Context menu (Windows shell look)
-   * ================================================================== */
-
-  var CTX_ITEMS = [
-    { type: 'item', icon: 'monitor', label: 'ctx.view' },
-    { type: 'item', icon: 'sliders-horizontal', label: 'ctx.sortBy' },
-    { type: 'item', icon: 'refresh', label: 'ctx.refresh' },
-    { type: 'sep' },
-    { type: 'item', icon: 'copy', label: 'ctx.paste' },
-    { type: 'item', icon: 'folder', label: 'ctx.newFolder' },
-    { type: 'sep' },
-    { type: 'item', icon: 'terminal', label: 'ctx.openTerminal' },
-    { type: 'item', icon: 'zap', label: 'ctx.run' },
-    { type: 'sep' },
-    { type: 'item', icon: 'info', label: 'ctx.properties' },
-    { type: 'item', icon: 'display', label: 'ctx.displaySettings' },
-    { type: 'item', icon: 'sliders', label: 'ctx.personalize' },
-    { type: 'item', icon: 'activity', label: 'ctx.taskManager' }
-  ];
-
-  function showContextMenu(x, y) {
-    var menu = $('#context-menu');
-    if (!menu) return;
-    menu.innerHTML = '';
-
-    CTX_ITEMS.forEach(function (item) {
-      if (item.type === 'sep') {
-        menu.appendChild(el('div', 'ctx-sep'));
-        return;
-      }
-      var btn = el('button', 'ctx-item');
-      btn.type = 'button';
-      var ic = el('span', 'icon ctx-icon');
-      ic.innerHTML = icons.icon(item.icon, { size: 15 });
-      btn.appendChild(ic);
-      btn.appendChild(el('span', 'ctx-label', t(item.label)));
-      var arrow = el('span', 'icon ctx-arrow');
-      arrow.innerHTML = icons.icon('chevron-right', { size: 14 });
-      btn.appendChild(arrow);
-      btn.addEventListener('click', function () {
-        hide(menu);
-        handleContextAction(item.label);
-      });
-      menu.appendChild(btn);
-    });
-
-    show(menu);
-    menu.style.left = '0px';
-    menu.style.top = '0px';
-    var rect = menu.getBoundingClientRect();
-    var left = clamp(x, 4, global.innerWidth - rect.width - 4);
-    var top = clamp(y, 4, global.innerHeight - rect.height - 4);
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
-    menu.classList.add('is-in');
-  }
-
-  function handleContextAction(label) {
-    if (label === 'ctx.refresh') {
-      loadDevices();
-      return;
-    }
-    if (label === 'ctx.openTerminal') {
-      openTerminal();
-      return;
-    }
-    if (label === 'ctx.displaySettings') {
-      openSettings();
-      return;
-    }
-    if (label === 'ctx.personalize') {
-      openSettings();
-      return;
-    }
-    // MOCK: the rest of the shell items need a real desktop backend.
-    toast(t('toast.notReady'), 'info');
-  }
-
-  /* ==================================================================
-   * File transfer
-   * ================================================================== */
-
-  function openFileTransfer() {
-    hide($('#context-menu'));
-    show($('#file-drawer'));
-    state.fileOpen = true;
-    syncDrawerClass();
-    loadFiles(state.currentPath);
-  }
-
-  function closeFileTransfer() {
-    hide($('#file-drawer'));
-    state.fileOpen = false;
-    syncDrawerClass();
-  }
-
-  /** Keep the toast column clear of an open drawer. */
-  function syncDrawerClass() {
-    var app = document.getElementById('app');
-    if (!app) return;
-    var drawerOpen = state.fileOpen || state.settingsOpen;
-    app.classList.toggle('has-drawer', drawerOpen);
-  }
-
-  /**
-   * Stack the floating panels (cloud keyboard, gamepad) so two open at
-   * once do not sit on top of each other.
-   */
-  function syncOverlayStack() {
-    var panels = $$('.overlay-panel').filter(function (p) { return !p.hidden; });
-    var offset = 0;
-    panels.forEach(function (panel) {
-      panel.style.setProperty('--stack-offset', offset + 'px');
-      // The panel above this one needs to clear its height.
-      offset += panel.offsetHeight + 12;
-    });
-  }
-
-  function loadFiles(path) {
-    state.currentPath = path || '/';
-    var pathLabel = $('#file-path');
-    if (pathLabel) pathLabel.textContent = state.currentPath;
-    var list = $('#file-list');
-
-    // MOCK: real listing comes from the peer over the file-transfer channel.
-    bridge.call('listFiles', { path: state.currentPath }).then(function (files) {
-      renderFiles(files || []);
-    }).catch(function (error) {
-      if (list) list.innerHTML = '';
-      if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
-      else toast(t('files.error.read'), 'error');
-    });
-  }
-
-  function renderFiles(files) {
-    var list = $('#file-list');
-    if (!list) return;
-    list.innerHTML = '';
-
-    if (!files.length) {
-      var empty = el('div', 'file-empty');
-      empty.appendChild(el('span', 'icon', ''));
-      empty.firstChild.innerHTML = icons.icon('folder', { size: 28 });
-      empty.appendChild(el('p', '', t('files.empty')));
-      list.appendChild(empty);
-      return;
-    }
-
-    files.forEach(function (file) {
-      var row = el('div', 'file-row');
-      row.tabIndex = 0;
-
-      var ic = el('span', 'icon file-icon');
-      ic.innerHTML = icons.icon(file.isDir ? 'folder' : 'file', { size: 18 });
-      row.appendChild(ic);
-
-      var main = el('div', 'file-main');
-      main.appendChild(el('div', 'file-name', file.name));
-      var meta = el('div', 'file-meta');
-      meta.appendChild(el('span', '', file.isDir ? t('files.folder') : formatBytes(file.size)));
-      meta.appendChild(el('span', 'meta-sep', '·'));
-      meta.appendChild(el('span', '', new Date(file.modified).toLocaleDateString()));
-      main.appendChild(meta);
-      row.appendChild(main);
-
-      var act = el('button', 'icon-btn icon-btn-sm');
-      act.type = 'button';
-      act.innerHTML = icons.icon(file.isDir ? 'chevron-right' : 'download', { size: 16 });
-      act.setAttribute('title', file.isDir ? t('common.more') : t('files.download'));
-      act.addEventListener('click', function (e) {
-        e.stopPropagation();
-        if (file.isDir) {
-          loadFiles(joinPath(state.currentPath, file.name));
-        } else {
-          queueTransfer(file.name, file.size, 'down');
-          toast(t('files.downloading', { name: file.name }), 'info');
-        }
-      });
-      row.appendChild(act);
-
-      row.addEventListener('click', function () {
-        if (file.isDir) loadFiles(joinPath(state.currentPath, file.name));
-        else { queueTransfer(file.name, file.size, 'down'); toast(t('files.downloading', { name: file.name }), 'info'); }
-      });
-      row.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') row.click();
-      });
-
-      list.appendChild(row);
-    });
-  }
-
-  function joinPath(base, name) {
-    if (base === '/') return '/' + name;
-    return base.replace(/\/$/, '') + '/' + name;
-  }
-
-  /* ---- transfer queue ---- */
-
-  var transferId = 0;
-
-  function queueTransfer(name, size, direction) {
-    var item = {
-      id: ++transferId,
-      name: name,
-      size: size || 0,
-      direction: direction || 'up',
-      progress: 0,
-      speed: 0,
-      state: 'running'
-    };
-    state.fileQueue.push(item);
-    renderQueue();
-
-    // MOCK: a real backend streams FileChunk messages and reports progress.
-    var timer = setInterval(function () {
-      if (item.state !== 'running') { clearInterval(timer); return; }
-      var step = 1.5 + Math.random() * 4;
-      item.progress = Math.min(100, item.progress + step);
-      // Mock throughput: fast enough that the ETA looks sane for any size.
-      var throughput = Math.max(item.size / 6, 65536);
-      item.speed = throughput * (step / 100);
-      if (item.progress >= 100) {
-        item.progress = 100;
-        item.state = 'done';
-        clearInterval(timer);
-      }
-      renderQueue();
-    }, 320);
-
-    item.cancel = function () {
-      item.state = 'canceled';
-      clearInterval(timer);
-      renderQueue();
-    };
-    return item;
-  }
-
-  function renderQueue() {
-    var host = $('#file-queue');
-    var empty = $('#queue-empty');
-    if (!host) return;
-    host.innerHTML = '';
-
-    if (!state.fileQueue.length) {
-      if (empty) show(empty);
-      return;
-    }
-    if (empty) hide(empty);
-
-    state.fileQueue.forEach(function (item) {
-      var row = el('div', 'queue-row');
-      row.setAttribute('data-state', item.state);
-
-      var head = el('div', 'queue-head');
-      var ic = el('span', 'icon queue-icon');
-      ic.innerHTML = icons.icon(item.direction === 'down' ? 'download' : 'upload', { size: 14 });
-      head.appendChild(ic);
-      head.appendChild(el('span', 'queue-name', item.name));
-      head.appendChild(el('span', 'queue-pct', Math.round(item.progress) + '%'));
-      row.appendChild(head);
-
-      var bar = el('div', 'queue-bar');
-      var fill = el('i');
-      fill.style.width = item.progress + '%';
-      bar.appendChild(fill);
-      row.appendChild(bar);
-
-      var foot = el('div', 'queue-foot');
-      var label = item.state === 'running'
-        ? t('files.item.' + (item.direction === 'down' ? 'downloading' : 'uploading'))
-        : t('files.item.' + item.state);
-      foot.appendChild(el('span', 'queue-state', label));
-      foot.appendChild(el('span', 'queue-sep', '·'));
-      foot.appendChild(el('span', '', formatBytes(item.size)));
-      if (item.state === 'running') {
-        foot.appendChild(el('span', 'queue-sep', '·'));
-        foot.appendChild(el('span', '', formatRate(item.speed) + '/s'));
-        foot.appendChild(el('span', 'queue-sep', '·'));
-        var remaining = item.size * (1 - item.progress / 100);
-        foot.appendChild(el('span', '', t('common.eta') + ' ' + formatEta(item.speed > 0 ? remaining / item.speed : 0)));
-      }
-      row.appendChild(foot);
-
-      if (item.state === 'running') {
-        var cancel = el('button', 'icon-btn icon-btn-xs queue-cancel');
-        cancel.type = 'button';
-        cancel.innerHTML = icons.icon('x', { size: 13 });
-        cancel.setAttribute('title', t('common.cancel'));
-        cancel.addEventListener('click', function () { item.cancel(); });
-        row.appendChild(cancel);
-      }
-      host.appendChild(row);
-    });
-  }
-
-  function wireFileDrop() {
-    var zone = $('#file-dropzone');
-    var input = $('#file-input');
-    if (!zone) return;
-
-    ['dragenter', 'dragover'].forEach(function (name) {
-      zone.addEventListener(name, function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        zone.classList.add('is-over');
-      });
-    });
-    ['dragleave', 'drop'].forEach(function (name) {
-      zone.addEventListener(name, function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        zone.classList.remove('is-over');
-      });
-    });
-
-    zone.addEventListener('drop', function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || !files.length) return;
-      for (var i = 0; i < files.length; i++) {
-        queueTransfer(files[i].name, files[i].size, 'up');
-      }
-      // MOCK: the real upload starts once the backend accepts the file.
-      toast(t('toast.notReady'), 'info');
-    });
-
-    var uploadBtn = $('#file-upload-btn');
-    if (uploadBtn && input) {
-      uploadBtn.addEventListener('click', function () { input.click(); });
-      input.addEventListener('change', function () {
-        for (var i = 0; i < input.files.length; i++) {
-          queueTransfer(input.files[i].name, input.files[i].size, 'up');
-        }
-        input.value = '';
-      });
-    }
-  }
-
-  /* ==================================================================
-   * Terminal
-   * ================================================================== */
-
-  function openTerminal() {
-    show($('#terminal-panel'));
-    state.terminalOpen = true;
-    if (!state.terminalLines.length) {
-      terminalWrite(t('terminal.connected'));
-    }
-    var input = $('#terminal-input');
-    if (input) input.focus();
-  }
-
-  function closeTerminal() {
-    hide($('#terminal-panel'));
-    state.terminalOpen = false;
-  }
-
-  function terminalWrite(text, cls) {
-    var out = $('#terminal-output');
-    if (!out) return;
-    var line = el('div', 'term-line' + (cls ? ' ' + cls : ''), text);
-    out.appendChild(line);
-    state.terminalLines.push(text);
-    out.scrollTop = out.scrollHeight;
-  }
-
-  function terminalExec(command) {
-    if (!command) return;
-    terminalWrite(t('terminal.prompt') + ' ' + command, 'term-cmd');
-    // MOCK: a real terminal streams `Message::Terminal` lines back.
-    bridge.call('terminalExec', { command: command }).then(function (res) {
-      var reply = res && res.output ? res.output : '';
-      if (!reply) {
-        reply = 'command not found: ' + command;
-      }
-      reply.split('\n').forEach(function (line) { if (line) terminalWrite(line, 'term-out'); });
-    }).catch(function (error) {
-      if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
-    });
-  }
-
-  /* ==================================================================
-   * Cloud keyboard
-   * ================================================================== */
-
-  var CLOUD_KEYS = [
-    ['Esc', 'Escape'], ['Tab', 'Tab'], ['Caps', 'CapsLock'], ['Shift', 'ShiftLeft'],
-    ['Ctrl', 'ControlLeft'], ['Alt', 'AltLeft'], ['Del', 'Delete'], ['Ins', 'Insert'],
-    ['Home', 'Home'], ['End', 'End'], ['PgUp', 'PageUp'], ['PgDn', 'PageDown'],
-    ['↑', 'ArrowUp'], ['←', 'ArrowLeft'], ['↓', 'ArrowDown'], ['→', 'ArrowRight'],
-    ['F1', 'F1'], ['F2', 'F2'], ['F3', 'F3'], ['F4', 'F4'],
-    ['F5', 'F5'], ['F6', 'F6'], ['F7', 'F7'], ['F8', 'F8'],
-    ['F9', 'F9'], ['F10', 'F10'], ['F11', 'F11'], ['F12', 'F12']
-  ];
-
-  function renderCloudKeys() {
-    var host = $('#cloud-keys');
-    if (!host) return;
-    host.innerHTML = '';
-    CLOUD_KEYS.forEach(function (pair) {
-      var btn = el('button', 'cloud-key', pair[0]);
-      btn.type = 'button';
-      btn.addEventListener('click', function () {
-        sendInput({ type: 'KeyDown', key: keyCodeFor({ key: pair[1] }) });
-        sendInput({ type: 'KeyUp', key: keyCodeFor({ key: pair[1] }) });
-      });
-      host.appendChild(btn);
-    });
-  }
-
-  /* ==================================================================
-   * Gamepad
-   * ================================================================== */
-
-  function pollGamepads() {
-    var host = $('#gamepad-list');
-    if (!host) return;
-    var pads = [];
-    if (global.navigator && typeof navigator.getGamepads === 'function') {
-      var raw = navigator.getGamepads();
-      for (var i = 0; i < raw.length; i++) {
-        if (raw[i]) pads.push(raw[i]);
-      }
-    }
-    host.innerHTML = '';
-    if (!pads.length) {
-      var empty = el('div', 'gamepad-empty');
-      var ic = el('span', 'icon');
-      ic.innerHTML = icons.icon('gamepad', { size: 26 });
-      empty.appendChild(ic);
-      empty.appendChild(el('p', '', t('gamepad.none')));
-      empty.appendChild(el('p', 'gamepad-hint', t('gamepad.connect')));
-      host.appendChild(empty);
-      return;
-    }
-    pads.forEach(function (pad) {
-      var row = el('div', 'gamepad-row');
-      var ic = el('span', 'icon');
-      ic.innerHTML = icons.icon('gamepad', { size: 18 });
-      row.appendChild(ic);
-      row.appendChild(el('span', 'gamepad-name', t('gamepad.connected', {
-        name: pad.id || 'Gamepad',
-        buttons: pad.buttons ? pad.buttons.length : 0
-      })));
-      host.appendChild(row);
-    });
-  }
-
-  /* ==================================================================
-   * Keymap editor
-   * ================================================================== */
-
-  var KEYMAP_DEFAULTS = [
-    { local: 'Ctrl+Alt+T', remote: 'Ctrl+Alt+T' },
-    { local: 'Super', remote: 'MetaLeft' },
-    { local: 'CapsLock', remote: 'CapsLock' }
-  ];
-
-  function renderKeymap() {
-    var host = $('#keymap-rows');
-    if (!host) return;
-    host.innerHTML = '';
-
-    var rows = state.settings.keymapRows && state.settings.keymapRows.length
-      ? state.settings.keymapRows
-      : KEYMAP_DEFAULTS;
-
-    if (!rows.length) {
-      var empty = el('div', 'keymap-empty');
-      empty.appendChild(el('span', 'icon', ''));
-      empty.firstChild.innerHTML = icons.icon('keyboard', { size: 26 });
-      empty.appendChild(el('p', '', t('keymap.empty')));
-      host.appendChild(empty);
-      return;
-    }
-
-    rows.forEach(function (row, index) {
-      var line = el('div', 'keymap-row');
-      line.appendChild(el('span', 'keymap-local', row.local));
-      line.appendChild(el('span', 'icon keymap-arrow', ''));
-      line.lastChild.innerHTML = icons.icon('arrow-right', { size: 15 });
-      line.appendChild(el('span', 'keymap-remote', row.remote));
-
-      var record = el('button', 'btn btn-secondary btn-xs');
-      record.type = 'button';
-      record.textContent = t('keymap.record');
-      record.addEventListener('click', function () {
-        state.keymapRecording = { index: index };
-        record.textContent = t('keymap.recording');
-        record.classList.add('is-recording');
-      });
-      line.appendChild(record);
-
-      var del = el('button', 'icon-btn icon-btn-xs');
-      del.type = 'button';
-      del.innerHTML = icons.icon('trash', { size: 14 });
-      del.addEventListener('click', function () {
-        rows.splice(index, 1);
-        state.settings.keymapRows = rows.slice();
-        renderKeymap();
-      });
-      line.appendChild(del);
-
-      host.appendChild(line);
-    });
-  }
-
-  function completeKeymapRecording(event) {
-    var rec = state.keymapRecording;
-    state.keymapRecording = null;
-    if (!rec) return;
-    var parts = [];
-    if (event.ctrlKey) parts.push('Ctrl');
-    if (event.altKey) parts.push('Alt');
-    if (event.shiftKey) parts.push('Shift');
-    if (event.metaKey) parts.push('Super');
-    parts.push(event.key.length === 1 ? event.key.toUpperCase() : event.key);
-
-    var rows = state.settings.keymapRows && state.settings.keymapRows.length
-      ? state.settings.keymapRows
-      : KEYMAP_DEFAULTS.slice();
-    rows[rec.index] = { local: parts.join('+'), remote: event.key };
-    state.settings.keymapRows = rows.slice();
-    renderKeymap();
-  }
-
-  /* ==================================================================
-   * Overlays
-   * ================================================================== */
-
-  function closeOverlays() {
-    ['#cloud-keyboard', '#gamepad-panel', '#keymap-modal', '#confirm-modal'].forEach(function (sel) {
-      hide($(sel));
-    });
-    syncOverlayStack();
-    if (state.keymapRecording) {
-      state.keymapRecording = null;
-      renderKeymap();
-    }
-  }
-
-  /* ==================================================================
-   * Frame rendering
-   * ================================================================== */
 
   function renderFrame(payload) {
     if (!payload) return;
 
-    // The backend sends the picture as H.264.  The browser decodes it.
-    if (payload.codec === 'h264' && payload.data) {
+    // The backend sends the picture as H.264 in one piece of text.
+    if (typeof payload.data === 'string' && payload.data.length) {
       var remote = $('#remote-canvas');
       if (!remote) return;
       if (!state.decoder) {
         if (!NS.Decoder.supported()) {
-          if (window.console && console.warn) {
-            console.warn('[skycremote] this browser cannot decode H.264');
+          if (global.console && global.console.warn) {
+            global.console.warn('[skycremote] this browser cannot decode H.264');
           }
           return;
         }
@@ -1711,14 +803,6 @@
       state.decoder.feed(payload.data, payload.ptsNs || 0);
     }
 
-    if (payload.imageData) {
-      var canvas = $('#remote-canvas');
-      if (!canvas) return;
-      var ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      var img = new ImageData(new Uint8ClampedArray(payload.imageData), payload.width, payload.height);
-      ctx.putImageData(img, 0, 0);
-    }
     if (payload.width && payload.height) {
       state.resolution = { width: payload.width, height: payload.height };
       paintStatus();
@@ -1726,206 +810,315 @@
   }
 
   /* ==================================================================
-   * Public API for the Rust backend
+   * The toolbar
    * ================================================================== */
 
-  var eventHandlers = Object.create(null);
+  function renderScreenMenu() {
+    var menu = $('#screen-menu');
+    if (!menu) return;
+    menu.innerHTML = '';
 
-  var api = {
-    /** Connect to a device by ID. */
-    connect: function (deviceId) {
-      startConnect(deviceId);
-      return Promise.resolve();
-    },
-
-    /** Disconnect the current session. */
-    disconnect: function () {
-      if (!state.connected) return Promise.resolve();
-      return bridge.call('disconnect').then(function () {
-        state.connected = false;
-        stopStatusPoll();
-        bridge.mock.stopFrames();
-        setConnectionStatus('closed');
-        toast(t('toast.disconnected'), 'info');
-        leaveRemoteView();
-      });
-    },
-
-    /** Send a keyboard/mouse event to the peer. */
-    sendInput: function (event) {
-      return bridge.call('sendInput', event);
-    },
-
-    /** Switch the quality preset. */
-    setQuality: function (id) {
-      state.settings.quality = id;
-      var sel = $('#quality-select');
-      if (sel) sel.value = id;
-      refreshQualityDisplay();
-      persistSettings();
-      return bridge.call('setQuality', { quality: id });
-    },
-
-    /** Set the target bitrate in Mbps. */
-    setBitrate: function (mbps) {
-      var value = clamp(parseInt(mbps, 10) || 50, 2, 500);
-      state.settings.bitrate = value;
-      var slider = $('#bitrate-slider');
-      if (slider) slider.value = value;
-      var out = $('#bitrate-value');
-      if (out) out.textContent = value + ' Mbps';
-      persistSettings();
-      return bridge.call('setBitrate', { bitrate: value });
-    },
-
-    /** Set the target frame rate. */
-    setFramerate: function (fps) {
-      var value = clamp(parseInt(fps, 10) || 60, 1, 240);
-      state.settings.framerate = value;
-      var slider = $('#framerate-slider');
-      if (slider) slider.value = value;
-      var out = $('#framerate-value');
-      if (out) out.textContent = value + ' FPS';
-      persistSettings();
-      return bridge.call('setFramerate', { framerate: value });
-    },
-
-    /** List the screens the peer reports. */
-    listScreens: function () {
-      return bridge.call('listScreens').then(function (screens) {
-        state.screens = normaliseScreens(screens || []);
-        renderScreenMenu();
-        return state.screens;
-      });
-    },
-
-    /** Switch to a screen by index. */
-    switchScreen: function (index) {
-      switchScreen(index);
-      return Promise.resolve();
-    },
-
-    /** Open the file transfer drawer. */
-    openFileTransfer: function () {
-      openFileTransfer();
-      return Promise.resolve();
-    },
-
-    /** Open the terminal panel. */
-    openTerminal: function () {
-      openTerminal();
-      return Promise.resolve();
-    },
-
-    /** Toggle the privacy screen on the peer. */
-    togglePrivacyScreen: function () {
-      state.privacyScreen = !state.privacyScreen;
-      applyPrivacyScreen();
-      return bridge.call('togglePrivacyScreen', { enabled: state.privacyScreen })
-        .catch(function (error) {
-          if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
-        });
-    },
-
-    /** Remote power action: 'shutdown' | 'restart' | 'sleep' | 'logoff'. */
-    powerAction: function (action) {
-      return bridge.call('powerAction', { action: action }).then(function () {
-        var labels = {
-          shutdown: t('power.shutdown'), restart: t('power.restart'),
-          sleep: t('power.sleep'), logoff: t('power.logoff')
-        };
-        toast(t('power.sent', { action: labels[action] || action }), 'info');
-      }).catch(function (error) {
-        if (error && error.code === 'notImplemented') toast(t('toast.notReady'), 'info');
-      });
-    },
-
-    /** Read the current settings. */
-    getSettings: function () {
-      return clone(state.settings);
-    },
-
-    /** Write settings back. */
-    saveSettings: function (settings) {
-      if (settings && typeof settings === 'object') {
-        Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
-          if (Object.prototype.hasOwnProperty.call(settings, key)) state.settings[key] = settings[key];
-        });
+    state.screens.forEach(function (screen) {
+      var item = el('button', 'menu-item');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      var iconNode = el('span', 'icon');
+      iconNode.innerHTML = icons.icon('display', { size: 16 });
+      item.appendChild(iconNode);
+      item.appendChild(el('span', '', screen.name || ('Screen ' + (screen.index + 1))));
+      if (screen.index === state.screenIndex) {
+        item.appendChild(el('span', 'icon', ''));
       }
-      persistSettings();
-      writeSettingsForm();
-      applyTheme(state.settings.theme, false);
-      i18n.setLocale(state.settings.language);
-      applyI18n();
-      return Promise.resolve(clone(state.settings));
-    },
+      item.addEventListener('click', function () {
+        closeMenus();
+        switchScreen(screen.index);
+      });
+      menu.appendChild(item);
+    });
 
-    /**
-     * Subscribe to a backend event.
-     * Events: 'connection' | 'frame' | 'toast' | 'screens' | 'terminal'
-     *         | 'files' | 'settings' | 'disconnect'
-     */
-    on: function (eventName, callback) {
-      if (typeof callback !== 'function') return function () {};
-      if (!eventHandlers[eventName]) eventHandlers[eventName] = [];
-      eventHandlers[eventName].push(callback);
-      return function off() {
-        var arr = eventHandlers[eventName];
-        if (!arr) return;
-        var i = arr.indexOf(callback);
-        if (i !== -1) arr.splice(i, 1);
-      };
-    },
-
-    /** Fire an event into the UI. The Rust side calls this. */
-    emit: function (eventName, payload) {
-      var handlers = eventHandlers[eventName];
-      if (handlers) {
-        handlers.slice().forEach(function (fn) {
-          try { fn(payload); } catch (e) { if (console && console.error) console.error(e); }
-        });
-      }
-      bridge.emit(eventName, payload);
-    },
-
-    // Extra conveniences used by the desktop shell.
-    setLanguage: function (lang) {
-      i18n.setLocale(lang);
-      state.settings.language = lang;
-      applyI18n();
-      var sel = $('#settings-language');
-      if (sel) sel.value = lang;
-      persistSettings();
-      syncToolbarDensity();
-      return Promise.resolve(lang);
-    },
-
-    setTheme: function (theme) {
-      applyTheme(theme, true);
-      return Promise.resolve(theme);
-    },
-
-    showToast: function (message, kind) {
-      return toast(message, kind);
-    },
-
-    getState: function () {
-      return {
-        view: state.view,
-        connected: state.connected,
-        connectionStatus: state.connectionStatus,
-        screenIndex: state.screenIndex,
-        latency: state.latency,
-        bitrate: state.bitrate,
-        framerate: state.framerate,
-        privacyScreen: state.privacyScreen,
-        virtualScreen: state.virtualScreen,
-        backendIsNative: bridge.isNative()
-      };
+    if (!state.screens.length) {
+      var empty = el('button', 'menu-item');
+      empty.type = 'button';
+      empty.disabled = true;
+      empty.textContent = t('remote.placeholder');
+      menu.appendChild(empty);
     }
-  };
+  }
 
-  /** Route a backend event to the matching UI behaviour. */
+  function switchScreen(index) {
+    bridge.call('switchScreen', { index: index }).then(function () {
+      state.screenIndex = index;
+      var screen = null;
+      for (var i = 0; i < state.screens.length; i++) {
+        if (state.screens[i].index === index) screen = state.screens[i];
+      }
+      toast(t('toast.screenSwitched', { name: screen ? screen.name : index }), 'success');
+      renderScreenMenu();
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  function toggleFullscreen() {
+    var stage = $('#remote-stage');
+    if (!stage) return;
+    var button = $('#fullscreen-btn');
+    if (document.fullscreenElement) {
+      if (document.exitFullscreen) document.exitFullscreen();
+      return;
+    }
+    if (stage.requestFullscreen) {
+      stage.requestFullscreen().then(function () {
+        if (button) {
+          button.setAttribute('data-i18n-title', 'remote.toolbar.exitFullscreen');
+          button.setAttribute('title', t('remote.toolbar.exitFullscreen'));
+        }
+      }).catch(function () { /* the window said no */ });
+    }
+  }
+
+  /** The parts of the program that the backend does not have yet. */
+  function notReady() {
+    toast(t('remote.notReady') + ' — ' + t('remote.notReadyHint'), 'warning');
+  }
+
+  /* ==================================================================
+   * Sending input to the other side
+   * ================================================================== */
+
+  function sendInput(payload) {
+    if (!state.connected) return;
+    bridge.call('sendInput', payload).catch(function () { /* the other end is gone */ });
+  }
+
+  /** Where the pointer is, in the pixels of the picture that was sent. */
+  function remotePoint(event) {
+    var canvas = $('#remote-canvas');
+    if (!canvas) return null;
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height || !canvas.width || !canvas.height) return null;
+
+    var scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+    var drawWidth = canvas.width * scale;
+    var drawHeight = canvas.height * scale;
+    var left = (rect.width - drawWidth) / 2;
+    var top = (rect.height - drawHeight) / 2;
+
+    var x = Math.round((event.clientX - rect.left - left) / scale);
+    var y = Math.round((event.clientY - rect.top - top) / scale);
+    return {
+      x: clamp(x, 0, canvas.width),
+      y: clamp(y, 0, canvas.height)
+    };
+  }
+
+  function mouseButton(event) {
+    if (event.button === 1) return 1;
+    if (event.button === 2) return 2;
+    return 0;
+  }
+
+  var lastMove = 0;
+
+  function wireRemoteInput() {
+    var stage = $('#remote-stage');
+    if (!stage) return;
+
+    stage.addEventListener('mousemove', function (event) {
+      if (!state.connected) return;
+      var now = Date.now();
+      if (now - lastMove < 30) return;
+      lastMove = now;
+      var point = remotePoint(event);
+      if (point) sendInput({ type: 'MouseMove', x: point.x, y: point.y });
+    });
+
+    stage.addEventListener('mousedown', function (event) {
+      if (!state.connected) return;
+      event.preventDefault();
+      var point = remotePoint(event);
+      if (!point) return;
+      sendInput({ type: 'MouseDown', button: mouseButton(event), x: point.x, y: point.y });
+    });
+
+    stage.addEventListener('mouseup', function (event) {
+      if (!state.connected) return;
+      var point = remotePoint(event);
+      if (!point) return;
+      sendInput({ type: 'MouseUp', button: mouseButton(event), x: point.x, y: point.y });
+    });
+
+    stage.addEventListener('wheel', function (event) {
+      if (!state.connected) return;
+      event.preventDefault();
+      var point = remotePoint(event);
+      if (!point) return;
+      var factor = event.deltaMode === 1 ? 16 : (event.deltaMode === 2 ? 100 : 1);
+      sendInput({
+        type: 'Scroll',
+        dx: -event.deltaX * factor,
+        dy: -event.deltaY * factor,
+        x: point.x,
+        y: point.y
+      });
+    }, { passive: false });
+
+    stage.addEventListener('contextmenu', function (event) {
+      if (state.connected) event.preventDefault();
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (!state.connected) return;
+      if (isTypingTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      event.preventDefault();
+      sendInput({ type: 'KeyDown', key: event.keyCode || 0 });
+
+      var text = event.key;
+      if (text && text.length === 1) {
+        sendInput({ type: 'Text', text: text });
+      }
+    });
+
+    document.addEventListener('keyup', function (event) {
+      if (!state.connected) return;
+      if (isTypingTarget(event.target)) return;
+      sendInput({ type: 'KeyUp', key: event.keyCode || 0 });
+    });
+  }
+
+  function isTypingTarget(node) {
+    if (!node || !node.tagName) return false;
+    var tag = node.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || node.isContentEditable;
+  }
+
+  /* ==================================================================
+   * The log
+   * ================================================================== */
+
+  function openLogs() {
+    show($('#log-panel'));
+    loadLogs();
+  }
+
+  function loadLogs() {
+    return bridge.call('getLogs').then(function (result) {
+      state.logs = (result && result.entries) || [];
+      renderLogs();
+    }).catch(function () {
+      renderLogs();
+    });
+  }
+
+  function renderLogs() {
+    var host = $('#log-list');
+    if (!host) return;
+    host.innerHTML = '';
+
+    if (!state.logs.length) {
+      host.appendChild(el('p', 'log-empty', t('log.empty')));
+    } else {
+      state.logs.forEach(function (entry) {
+        var row = el('div', 'log-row log-' + (entry.level || 'info'));
+        row.appendChild(el('span', 'log-time', logTime(entry.time)));
+        row.appendChild(el('span', 'log-level', entry.level || 'info'));
+        row.appendChild(el('span', 'log-message', entry.message || ''));
+        host.appendChild(row);
+      });
+    }
+
+    setText($('#log-count'), t('log.count', { n: state.logs.length }));
+  }
+
+  function logTime(value) {
+    var date = new Date(typeof value === 'number' ? value : Date.now());
+    function two(part) { return (part < 10 ? '0' : '') + part; }
+    return two(date.getHours()) + ':' + two(date.getMinutes()) + ':' + two(date.getSeconds());
+  }
+
+  function clearLogs() {
+    bridge.call('clearLogs').then(function () {
+      state.logs = [];
+      renderLogs();
+      toast(t('toast.logCleared'), 'success');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  /* ==================================================================
+   * Backend events
+   * ================================================================== */
+
+  function handleConnectionEvent(payload) {
+    if (!payload) return;
+
+    var status = payload.status || payload.state;
+    if (status) setConnectionStatus(status);
+
+    if (payload.latencyMs !== undefined) state.latency = payload.latencyMs;
+    else if (payload.latency !== undefined) state.latency = payload.latency;
+    if (payload.bitrate !== undefined) state.bitrate = payload.bitrate;
+    if (payload.framerate !== undefined) state.framerate = payload.framerate;
+
+    if (payload.verifyCode) {
+      state.verifyCode = payload.verifyCode;
+      renderVerify();
+    }
+
+    if (status === 'closed') {
+      state.connected = false;
+      leaveRemoteView();
+    }
+
+    paintStatus();
+  }
+
+  function handleHostEvent(payload) {
+    if (!payload) return;
+
+    var hostState = payload.state || 'stopped';
+    state.hostState = hostState;
+    state.sharing = (hostState === 'waiting' || hostState === 'sharing');
+
+    if (payload.verifyCode) state.hostVerifyCode = payload.verifyCode;
+    if (hostState === 'stopped') state.hostVerifyCode = '';
+
+    renderMyDevice();
+
+    if (hostState === 'sharing') toast(t('toast.hostStarted'), 'success');
+    else if (hostState === 'stopped') toast(t('toast.hostStopped'), 'info');
+    else if (hostState === 'warning') toast(payload.message || t('toast.hostWarning'), 'warning');
+  }
+
+  function handleSettingsEvent(payload) {
+    if (!payload) return;
+    state.backendSettings = payload;
+
+    // The file on disk is the truth.  A key that is not in it is one
+    // this version of the backend does not know about, so the copy the
+    // page keeps is left alone.
+    Object.keys(payload).forEach(function (key) {
+      if (key === 'savedCodes') {
+        if (payload.savedCodes && typeof payload.savedCodes === 'object') {
+          state.settings.savedCodes = payload.savedCodes;
+        }
+        return;
+      }
+      if (key === 'accessCode') {
+        state.settings.accessCode = payload.accessCode || '';
+        return;
+      }
+      state.settings[key] = payload[key];
+    });
+
+    writeSettingsForm();
+    renderMyDevice();
+    paintStatus();
+  }
+
   function handleBackendEvent(eventName, payload) {
     switch (eventName) {
       case 'connection':
@@ -1934,58 +1127,30 @@
       case 'frame':
         renderFrame(payload);
         break;
-      case 'toast':
-        if (payload && payload.message) toast(payload.message, payload.kind || 'info');
+      case 'host':
+        handleHostEvent(payload);
+        break;
+      case 'settings':
+        handleSettingsEvent(payload);
         break;
       case 'screens':
         state.screens = normaliseScreens((payload && payload.screens) || payload || []);
         renderScreenMenu();
-        applyScreen(state.screenIndex);
         break;
-      case 'terminal':
-        if (payload && payload.data) {
-          String(payload.data).split('\n').forEach(function (line) {
-            if (line) terminalWrite(line, 'term-out');
-          });
-        }
-        break;
-      case 'files':
-        renderFiles((payload && payload.files) || payload || []);
-        break;
-      case 'settings':
-        if (payload) {
-          Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
-            if (Object.prototype.hasOwnProperty.call(payload, key)) state.settings[key] = payload[key];
-          });
-          writeSettingsForm();
-        }
+      case 'toast':
+        if (payload && payload.message) toast(payload.message, payload.kind || 'info');
         break;
       case 'disconnect':
         state.connected = false;
-        stopStatusPoll();
-        setConnectionStatus('closed');
-        toast(t('toast.disconnected'), 'info');
         leaveRemoteView();
+        toast(t('toast.disconnected'), 'info');
+        break;
+      case 'quit':
+        toast(t('toast.quit'), 'info');
         break;
       default:
         break;
     }
-  }
-
-  function handleConnectionEvent(payload) {
-    if (!payload) return;
-    var status = payload.status || payload.state;
-    if (status) setConnectionStatus(status);
-    if (payload.latency !== undefined) state.latency = payload.latency;
-    if (payload.bitrate !== undefined) state.bitrate = payload.bitrate;
-    if (payload.framerate !== undefined) state.framerate = payload.framerate;
-    if (payload.deviceName && status === 'connected') {
-      toast(t('toast.connected', { name: payload.deviceName }), 'success');
-    }
-    if (status === 'reconnecting') {
-      toast(t('toast.connectionLost'), 'warning');
-    }
-    paintStatus();
   }
 
   /* ==================================================================
@@ -2011,7 +1176,11 @@
           persistSettings();
           applyI18n();
           updateLangLabel();
-          syncToolbarDensity();
+          renderMyDevice();
+          renderDevices();
+          renderSavedCodes();
+          renderVerify();
+          paintStatus();
           closeMenus();
         });
       });
@@ -2033,8 +1202,8 @@
       });
     }
 
-    var settingsBtn = $('#toolbar-settings');
-    if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
+    bind($('#toolbar-logs'), 'click', openLogs);
+    bind($('#toolbar-settings'), 'click', openSettings);
   }
 
   function updateLangLabel() {
@@ -2042,58 +1211,60 @@
     if (label) label.textContent = i18n.getLocale() === 'zh' ? '中' : 'EN';
   }
 
-  function wireConnectView() {
-    var form = $('#connect-form');
-    if (form) {
-      form.addEventListener('submit', function (e) {
-        e.preventDefault();
-        startConnect($('#device-id-input').value);
-      });
-    }
+  function wireMyDevice() {
+    bind($('#share-toggle'), 'click', toggleShare);
+    bind($('#my-copy-id'), 'click', function () {
+      copyText(state.settings.deviceId);
+    });
+  }
 
-    var input = $('#device-id-input');
-    var clear = $('#id-field-clear');
-    if (input && clear) {
-      input.addEventListener('input', function () {
-        clear.hidden = !input.value;
-      });
-      clear.addEventListener('click', function () {
-        input.value = '';
-        clear.hidden = true;
-        input.focus();
-      });
-      // Autofocus once the DOM is ready.
-      setTimeout(function () { input.focus(); }, 60);
-    }
+  function wireDeviceList() {
+    bind($('#device-refresh'), 'click', function () { loadDevices(); });
 
-    $$('#device-tabs .seg').forEach(function (seg) {
-      seg.addEventListener('click', function () {
-        $$('#device-tabs .seg').forEach(function (s) { s.classList.remove('is-active'); });
-        seg.classList.add('is-active');
-        state.deviceTab = seg.getAttribute('data-tab');
-        renderDevices();
-      });
+    bind($('#device-search'), 'input', function (event) {
+      state.deviceQuery = event.target.value || '';
+      renderDevices();
     });
 
-    var search = $('#device-search');
-    if (search) {
-      search.addEventListener('input', debounce(function () {
-        state.deviceQuery = search.value;
-        renderDevices();
-      }, 120));
+    var form = $('#manual-form');
+    if (form) {
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var id = ($('#device-id-input').value || '').trim();
+        if (!id) return;
+        $('#device-id-input').value = '';
+        requestConnect(id);
+      });
     }
+  }
 
-    var refresh = $('#device-refresh');
-    if (refresh) refresh.addEventListener('click', loadDevices);
+  function wireAccessDialog() {
+    bind($('#access-ok'), 'click', function () {
+      var code = ($('#access-input').value || '').trim();
+      var remember = $('#access-remember').checked;
+      closeAccessDialog({ code: code, remember: remember });
+    });
+
+    bind($('#access-cancel'), 'click', function () {
+      closeAccessDialog(null);
+    });
+
+    var input = $('#access-input');
+    if (input) {
+      input.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        var code = (input.value || '').trim();
+        var remember = $('#access-remember').checked;
+        closeAccessDialog({ code: code, remember: remember });
+      });
+    }
   }
 
   function wireRemoteToolbar() {
-    var toggle = $('#toolbar-toggle');
-    if (toggle) toggle.addEventListener('click', function () {
-      state.toolbarPinned = !state.toolbarPinned;
-      setToolbarVisible(!state.toolbarVisible);
-      if (state.toolbarPinned) setToolbarVisible(true);
-    });
+    bind($('#remote-back'), 'click', disconnect);
+    bind($('#btn-disconnect'), 'click', disconnect);
+    bind($('#fullscreen-btn'), 'click', toggleFullscreen);
 
     var screenBtn = $('#screen-btn');
     var screenMenu = $('#screen-menu');
@@ -2105,740 +1276,64 @@
       });
     }
 
-    var virtualBtn = $('#virtual-screen-btn');
-    if (virtualBtn) virtualBtn.addEventListener('click', toggleVirtualScreen);
-
-    var cursorBtn = $('#cursor-btn');
-    var cursorMenu = $('#cursor-menu');
-    if (cursorBtn && cursorMenu) {
-      cursorBtn.addEventListener('click', function (e) {
+    var moreBtn = $('#more-btn');
+    var moreMenu = $('#more-menu');
+    if (moreBtn && moreMenu) {
+      moreBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (openMenu && openMenu.menu === cursorMenu) closeMenus();
-        else showMenu(cursorMenu, cursorBtn);
-      });
-      $$('[data-cursor]', cursorMenu).forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          setCursorStyle(btn.getAttribute('data-cursor'));
-          closeMenus();
-        });
+        if (openMenu && openMenu.menu === moreMenu) closeMenus();
+        else showMenu(moreMenu, moreBtn);
       });
     }
 
-    var powerBtn = $('#btn-power');
-    var powerMenu = $('#power-menu');
-    if (powerBtn && powerMenu) {
-      powerBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        if (openMenu && openMenu.menu === powerMenu) closeMenus();
-        else showMenu(powerMenu, powerBtn);
-      });
-      $$('[data-power]', powerMenu).forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var action = btn.getAttribute('data-power');
-          closeMenus();
-          confirmDialog(t('power.confirm.' + action)).then(function (ok) {
-            if (!ok) return;
-            api.powerAction(action);
-          });
-        });
-      });
-    }
-
-    var fileBtn = $('#btn-file');
-    if (fileBtn) fileBtn.addEventListener('click', openFileTransfer);
-
-    var terminalBtn = $('#btn-terminal');
-    if (terminalBtn) terminalBtn.addEventListener('click', openTerminal);
-
-    var keymapBtn = $('#btn-keymap');
-    if (keymapBtn) keymapBtn.addEventListener('click', function () {
-      hide($('#context-menu'));
-      renderKeymap();
-      show($('#keymap-modal'));
-    });
-
-    var cloudBtn = $('#btn-cloud-keyboard');
-    if (cloudBtn) cloudBtn.addEventListener('click', function () {
-      show($('#cloud-keyboard'));
-      syncOverlayStack();
-    });
-
-    var gamepadBtn = $('#btn-gamepad');
-    if (gamepadBtn) gamepadBtn.addEventListener('click', function () {
-      show($('#gamepad-panel'));
-      pollGamepads();
-      syncOverlayStack();
-    });
-
-    var privacyBtn = $('#btn-privacy');
-    if (privacyBtn) privacyBtn.addEventListener('click', function () {
-      api.togglePrivacyScreen();
-    });
-
-    var disconnectBtn = $('#btn-disconnect');
-    if (disconnectBtn) disconnectBtn.addEventListener('click', function () {
-      confirmDialog(t('power.confirm.logoff')).then(function (ok) {
-        if (ok) api.disconnect();
-      });
-    });
-
-    var fullscreenBtn = $('#fullscreen-btn');
-    if (fullscreenBtn) {
-      fullscreenBtn.addEventListener('click', function () {
-        toggleFullscreen();
-      });
-    }
-  }
-
-  function toggleFullscreen() {
-    var app = document.getElementById('app');
-    var target = app || document.documentElement;
-    if (!document.fullscreenElement) {
-      if (target.requestFullscreen) target.requestFullscreen();
-      document.body.classList.add('is-fullscreen');
-    } else {
-      if (document.exitFullscreen) document.exitFullscreen();
-      document.body.classList.remove('is-fullscreen');
-    }
-  }
-
-  /** Auto-show the toolbar when the pointer moves to the top of the stage. */
-  function wireToolbarAutoShow() {
-    var stage = $('#remote-stage');
-    var bar = $('#remote-toolbar');
-    if (!stage || !bar) return;
-
-    var hideTimer = null;
-    stage.addEventListener('mousemove', function (e) {
-      var rect = stage.getBoundingClientRect();
-      if (e.clientY - rect.top < 90) {
-        clearTimeout(hideTimer);
-        setToolbarVisible(true);
-        if (state.toolbarPinned) return;
-        hideTimer = setTimeout(function () {
-          if (!state.toolbarPinned) setToolbarVisible(false);
-        }, 2600);
-      }
-    });
-
-    stage.addEventListener('mouseleave', function () {
-      clearTimeout(hideTimer);
-      if (!state.toolbarPinned) setToolbarVisible(false);
-    });
+    // These parts are not in the backend yet.  They stay in the menu
+    // so the shape of the program is visible, and they say so.
+    var notReadyHandler = function () {
+      closeMenus();
+      notReady();
+    };
+    bind($('#btn-file'), 'click', notReadyHandler);
+    bind($('#btn-terminal'), 'click', notReadyHandler);
+    bind($('#btn-cloud-keyboard'), 'click', notReadyHandler);
+    bind($('#btn-gamepad'), 'click', notReadyHandler);
+    bind($('#btn-mapping'), 'click', notReadyHandler);
+    bind($('#btn-privacy'), 'click', notReadyHandler);
+    bind($('#btn-virtual-screen'), 'click', notReadyHandler);
+    bind($('#btn-power'), 'click', notReadyHandler);
   }
 
   function wireSettingsPanel() {
-    var closeBtn = $('#settings-close');
-    if (closeBtn) closeBtn.addEventListener('click', closeSettings);
-
-    var saveBtn = $('#settings-save-btn');
-    if (saveBtn) saveBtn.addEventListener('click', saveSettings);
-
-    var resetBtn = $('#settings-reset-btn');
-    if (resetBtn) resetBtn.addEventListener('click', resetSettings);
-
-    var quitBtn = $('#settings-quit-btn');
-    if (quitBtn) quitBtn.addEventListener('click', function () {
-      writeLog('info', t('window.quitting'));
-      bridge.call('quit').catch(function () {});
+    bind($('#settings-close'), 'click', closeDrawer);
+    bind($('#settings-save-btn'), 'click', saveSettings);
+    bind($('#settings-quit-btn'), 'click', function () {
+      bridge.call('quit').catch(function () { /* the program is going away */ });
     });
 
-    var bitrate = $('#bitrate-slider');
-    if (bitrate) {
-      bitrate.addEventListener('input', function () {
-        var out = $('#bitrate-value');
-        if (out) out.textContent = bitrate.value + ' Mbps';
-      });
-      bitrate.addEventListener('change', function () { api.setBitrate(bitrate.value); });
-    }
-
-    var framerate = $('#framerate-slider');
-    if (framerate) {
-      framerate.addEventListener('input', function () {
-        var out = $('#framerate-value');
-        if (out) out.textContent = framerate.value + ' FPS';
-      });
-      framerate.addEventListener('change', function () { api.setFramerate(framerate.value); });
-    }
-
-    var quality = $('#quality-select');
-    if (quality) quality.addEventListener('change', function () {
-      state.settings.quality = quality.value;
-      refreshQualityDisplay();
-      // A preset is nothing but a frame rate and a bitrate: the
-      // numbers it stands for are put into the two sliders, so that
-      // what it does is visible.
-      var preset = QUALITY_PRESETS[quality.value];
-      if (preset) {
-        state.settings.bitrate = preset.bitrate;
-        state.settings.framerate = preset.fps;
-        writeSettingsForm();
-        persistSettings();
-      }
-      toast(t('toast.qualityChanged', { value: t('status.quality.' + quality.value) }), 'info');
+    bind($('#settings-quality'), 'change', function (event) {
+      var preset = QUALITY_PRESETS[event.target.value];
+      if (!preset) return;
+      $('#settings-bitrate').value = preset.bitrate;
+      $('#bitrate-value').textContent = preset.bitrate + ' Mbps';
+      $('#settings-framerate').value = preset.fps;
+      $('#framerate-value').textContent = preset.fps + ' FPS';
     });
 
-    var encoder = $('#encoder-select');
-    if (encoder) encoder.addEventListener('change', function () {
-      state.settings.encoder = encoder.value;
-      toast(t('toast.encoderChanged', { value: t('settings.encoder.' + encoder.value.replace('-', '')) || encoder.value }), 'info');
+    bind($('#settings-bitrate'), 'input', function (event) {
+      $('#bitrate-value').textContent = event.target.value + ' Mbps';
     });
 
-    var language = $('#settings-language');
-    if (language) language.addEventListener('change', function () {
-      i18n.setLocale(language.value);
-      state.settings.language = language.value;
-      applyI18n();
-      updateLangLabel();
-    });
-
-    var theme = $('#settings-theme');
-    if (theme) theme.addEventListener('change', function () {
-      applyTheme(theme.value, true);
-    });
-
-    var privacyToggle = $('#privacy-screen-toggle');
-    if (privacyToggle) privacyToggle.addEventListener('change', function () {
-      state.privacyScreen = privacyToggle.checked;
-      applyPrivacyScreen();
-    });
-
-    var keymapEdit = $('#keymap-edit-btn');
-    if (keymapEdit) keymapEdit.addEventListener('click', function () {
-      renderKeymap();
-      show($('#keymap-modal'));
-    });
-
-    var portAdd = $('#port-add-btn');
-    if (portAdd) portAdd.addEventListener('click', function () {
-      state.settings.portMappings = state.settings.portMappings || [];
-      state.settings.portMappings.push({ localPort: 0, remoteHost: '', remotePort: 0 });
-      renderPorts();
-    });
-
-    var browse = $('#file-browse-btn');
-    if (browse) browse.addEventListener('click', function () {
-      // MOCK: the real button opens a native folder picker.
-      toast(t('toast.notReady'), 'info');
+    bind($('#settings-framerate'), 'input', function (event) {
+      $('#framerate-value').textContent = event.target.value + ' FPS';
     });
   }
 
-  function applyPrivacyScreen() {
-    var shield = $('#privacy-shield');
-    var btn = $('#btn-privacy');
-    if (shield) shield.hidden = !state.privacyScreen;
-    if (btn) btn.setAttribute('aria-pressed', state.privacyScreen ? 'true' : 'false');
-    var toggleBox = $('#privacy-screen-toggle');
-    if (toggleBox) toggleBox.checked = state.privacyScreen;
-    toast(state.privacyScreen ? t('privacy.screen.on') : t('privacy.screen.off'), 'info');
-  }
-
-  function wireFileDrawer() {
-    var close = $('#file-close');
-    if (close) close.addEventListener('click', closeFileTransfer);
-
-    var refresh = $('#file-refresh');
-    if (refresh) refresh.addEventListener('click', function () { loadFiles(state.currentPath); });
-
-    var up = $('#file-up');
-    if (up) up.addEventListener('click', function () {
-      var parts = state.currentPath.split('/').filter(Boolean);
-      parts.pop();
-      loadFiles('/' + parts.join('/'));
-    });
-  }
-
-  function wireTerminal() {
-    var close = $('#terminal-close');
-    if (close) close.addEventListener('click', closeTerminal);
-
-    var input = $('#terminal-input');
-    var send = $('#terminal-send');
-    function submit() {
-      if (!input) return;
-      var cmd = input.value.trim();
-      input.value = '';
-      terminalExec(cmd);
-    }
-    if (input) {
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); submit(); }
-      });
-    }
-    if (send) send.addEventListener('click', submit);
-
-    var copy = $('#terminal-copy');
-    if (copy) copy.addEventListener('click', function () {
-      var text = state.terminalLines.join('\n');
-      if (global.navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () {
-          toast(t('toast.terminalCopied'), 'success');
-        }).catch(function () { toast(t('files.error.download'), 'error'); });
-      } else {
-        toast(t('toast.notReady'), 'info');
-      }
-    });
-
-    var clear = $('#terminal-clear');
-    if (clear) clear.addEventListener('click', function () {
-      state.terminalLines = [];
-      var out = $('#terminal-output');
-      if (out) out.innerHTML = '';
-    });
-  }
-
-  function wireKeymapModal() {
-    var close = $('#keymap-close');
-    if (close) close.addEventListener('click', function () {
-      hide($('#keymap-modal'));
-      state.keymapRecording = null;
-    });
-
-    var add = $('#keymap-add-btn');
-    if (add) add.addEventListener('click', function () {
-      var rows = state.settings.keymapRows && state.settings.keymapRows.length
-        ? state.settings.keymapRows
-        : KEYMAP_DEFAULTS.slice();
-      rows.push({ local: t('keymap.unassigned'), remote: t('keymap.unassigned') });
-      state.settings.keymapRows = rows.slice();
-      renderKeymap();
-    });
-
-    var reset = $('#keymap-reset-btn');
-    if (reset) reset.addEventListener('click', function () {
-      state.settings.keymapRows = clone(KEYMAP_DEFAULTS);
-      renderKeymap();
-    });
-
-    var save = $('#keymap-save-btn');
-    if (save) save.addEventListener('click', function () {
-      persistSettings();
-      hide($('#keymap-modal'));
-      toast(t('toast.keymapSaved'), 'success');
-    });
-  }
-
-  function wireOverlays() {
-    var cloudClose = $('#cloud-close');
-    if (cloudClose) cloudClose.addEventListener('click', function () {
-      hide($('#cloud-keyboard'));
-      syncOverlayStack();
-    });
-
-    var cloudSend = $('#cloud-send');
-    var cloudText = $('#cloud-text');
-    function cloudSubmit() {
-      if (!cloudText) return;
-      var text = cloudText.value;
-      if (!text) return;
-      cloudText.value = '';
-      sendInput({ type: 'Text', text: text });
-    }
-    if (cloudSend) cloudSend.addEventListener('click', cloudSubmit);
-    if (cloudText) cloudText.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); cloudSubmit(); }
-    });
-
-    var gamepadClose = $('#gamepad-close');
-    if (gamepadClose) gamepadClose.addEventListener('click', function () {
-      hide($('#gamepad-panel'));
-      syncOverlayStack();
-    });
-  }
-
-  /** Keep the canvas sized to its container and to the device pixel ratio. */
-  function wireResizeHandling() {
-    var stage = $('#remote-stage');
-    var canvas = $('#remote-canvas');
-    if (!stage || !canvas) return;
-
-    function fit() {
-      var rect = stage.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      var dpr = global.devicePixelRatio || 1;
-      var cssWidth = rect.width;
-      var cssHeight = rect.height;
-
-      // Letterbox the remote picture inside the stage.
-      var rw = canvas.width;
-      var rh = canvas.height;
-      var scale = Math.min(cssWidth / rw, cssHeight / rh);
-      var drawW = rw * scale;
-      var drawH = rh * scale;
-      canvas.style.width = drawW + 'px';
-      canvas.style.height = drawH + 'px';
-      canvas.style.left = ((cssWidth - drawW) / 2) + 'px';
-      canvas.style.top = ((cssHeight - drawH) / 2) + 'px';
-
-      state.lastRemoteSize = { width: rect.width, height: rect.height, dpr: dpr };
-    }
-
-    if (global.ResizeObserver) {
-      var ro = new ResizeObserver(fit);
-      ro.observe(stage);
-    }
-    global.addEventListener('resize', fit);
-    global.addEventListener('orientationchange', fit);
-    global.addEventListener('resize', debounce(syncToolbarDensity, 120));
-
-    // A zoom change on some platforms does not fire resize; poll the ratio.
-    var lastDpr = global.devicePixelRatio || 1;
-    global.setInterval(function () {
-      var dpr = global.devicePixelRatio || 1;
-      if (dpr !== lastDpr) {
-        lastDpr = dpr;
-        fit();
-      }
-    }, 1000);
-
-    fit();
-  }
-
-  function wireGlobalKeys() {
-    document.addEventListener('keydown', function (e) {
-      // Ctrl/Cmd+Alt+F toggles fullscreen.
-      if (e.ctrlKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault();
-        toggleFullscreen();
-        return;
-      }
-      // Ctrl/Cmd+, opens settings.
-      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
-        e.preventDefault();
-        openSettings();
-      }
-    });
-
-    if (systemDark && typeof systemDark.addEventListener === 'function') {
-      systemDark.addEventListener('change', function () {
-        if (state.themePref === 'system') applyTheme('system', false);
-      });
-    }
-  }
-
-  /* ==================================================================
-   * Sharing: letting another machine control this one
-   *
-   * The program does two things, and the page shows both: control
-   * another device, or let another device control this one.  The
-   * second one needs the tracker and a device id, because that is
-   * what the other end types in.
-   * ================================================================== */
-
-  function setMode(mode) {
-    state.mode = mode;
-    var sharing = mode === 'share';
-    $$('#mode-switch [data-mode]').forEach(function (button) {
-      button.classList.toggle('is-active', button.getAttribute('data-mode') === mode);
-    });
-    toggle($('#control-hero'), !sharing);
-    toggle($('#devices-section'), !sharing);
-    toggle($('#share-panel'), sharing);
-    if (sharing) fillShareForm();
-  }
-
-  function fillShareForm() {
-    // The device id, the name and the tracker are one thing in one
-    // place: the settings.  Here they are only shown.
-    var settings = state.settings || {};
-    var id = $('#share-id-value');
-    var name = $('#share-name-value');
-    var tracker = $('#share-tracker-value');
-    if (id) id.textContent = settings.deviceId || '—';
-    if (name) name.textContent = settings.deviceName || '—';
-    if (tracker) tracker.textContent = settings.tracker || '—';
-  }
-
-  function startSharing() {
-    var settings = state.settings || {};
-    var id = (settings.deviceId || '').trim();
-    if (!id) {
-      toast(t('share.error.noId'), 'warning');
-      return;
-    }
-    if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) {
-      toast(t('share.error.invalid'), 'warning');
-      return;
-    }
-
-    var button = $('#share-btn');
-    if (button) {
-      button.classList.add('is-busy');
-      button.disabled = true;
-    }
-    setShareButtonLabel(t('share.starting'));
-
-    writeLog('info', '开始共享：' + id);
-    bridge.call('startHost', {
-      deviceId: id,
-      deviceName: (settings.deviceName || '').trim()
-    }).then(function () {
-      state.sharing = true;
-      showShareCard(id);
-      setShareButtonStop();
-      setShareStatus('waiting');
-      // The button was greyed out while the share was starting.  It
-      // has to be usable again: it is the one that stops the share.
-      if (button) {
-        button.classList.remove('is-busy');
-        button.disabled = false;
-      }
-    }).catch(function (error) {
-      if (button) {
-        button.classList.remove('is-busy');
-        button.disabled = false;
-      }
-      setShareButtonLabel(t('share.start'));
-      toast((error && error.message) || t('share.error.failed'), 'error');
-    });
-  }
-
-  function stopSharing() {
-    var button = $('#share-btn');
-    if (button) {
-      button.classList.add('is-busy');
-      button.disabled = true;
-    }
-    setShareButtonLabel(t('share.stopping'));
-
-    writeLog('info', '停止共享');
-    bridge.call('stopHost').then(function () {
-      state.sharing = false;
-      if (button) {
-        button.classList.remove('is-busy');
-        button.disabled = false;
-      }
-      setShareButtonLabel(t('share.start'));
-      setShareStatus('stopped');
-    }).catch(function (error) {
-      if (button) {
-        button.classList.remove('is-busy');
-        button.disabled = false;
-      }
-      setShareButtonLabel(t('share.start'));
-      toast((error && error.message) || t('share.error.failed'), 'error');
-    });
-  }
-
-  function setShareButtonLabel(text) {
-    var label = $('#share-btn-label');
-    if (label) label.textContent = text;
-  }
-
-  function setShareButtonStop() {
-    setShareButtonLabel(t('share.stop'));
-    var icon = $('#share-btn .icon');
-    if (icon) {
-      icon.setAttribute('data-icon', 'x');
-      hydrateIcons(icon.parentNode);
-    }
-  }
-
-  function setShareButtonStart() {
-    setShareButtonLabel(t('share.start'));
-    var icon = $('#share-btn .icon');
-    if (icon) {
-      icon.setAttribute('data-icon', 'play');
-      hydrateIcons(icon.parentNode);
-    }
-  }
-
-  function showShareCard(id) {
-    var card = $('#share-card');
-    var value = $('#share-card-id');
-    if (value) value.textContent = id;
-    show(card);
-  }
-
-  function setShareStatus(kind, detail) {
-    var box = $('#share-status');
-    var text = $('#share-status-text');
-    var dot = $('#share-status-dot');
-    if (!box) return;
-
-    var labels = {
-      waiting: t('share.state.waiting'),
-      sharing: t('share.state.sharing'),
-      stopped: t('share.state.stopped'),
-      warning: t('share.state.warning')
-    };
-    if (text) text.textContent = detail ? detail : (labels[kind] || '');
-    if (dot) {
-      dot.className = 'status-dot' + (kind ? ' is-' + kind : '');
-    }
-    show(box);
-  }
-
-  function handleHostEvent(payload) {
-    if (!payload) return;
-    var kind = payload.state;
-    if (kind === 'sharing') {
-      state.sharing = true;
-      setShareStatus('sharing', t('share.state.sharingDetail', { screen: payload.screen || '' }));
-    } else if (kind === 'warning') {
-      state.sharing = true;
-      setShareStatus('warning', payload.message || t('share.state.warning'));
-    } else if (kind === 'waiting') {
-      state.sharing = true;
-      setShareStatus('waiting');
-    } else if (kind === 'stopped') {
-      state.sharing = false;
-      setShareStatus('stopped');
-      setShareButtonStart();
-      var button = $('#share-btn');
-      if (button) {
-        button.classList.remove('is-busy');
-        button.disabled = false;
-      }
-    } else {
-      setShareStatus('waiting');
-    }
-  }
-
-  function wireShareView() {
-    var switcher = $('#mode-switch');
-    if (switcher) {
-      switcher.addEventListener('click', function (event) {
-        var button = event.target.closest('[data-mode]');
-        if (!button) return;
-        setMode(button.getAttribute('data-mode'));
-      });
-    }
-
-    var form = $('#share-form');
-    if (form) {
-      form.addEventListener('submit', function (event) {
-        event.preventDefault();
-        if (state.sharing) stopSharing();
-        else startSharing();
-      });
-    }
-
-    var copy = $('#share-copy');
-    if (copy) {
-      copy.addEventListener('click', function () {
-        var id = $('#share-card-id') ? $('#share-card-id').textContent : '';
-        if (!id) return;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(id).then(function () {
-            toast(t('share.copied'), 'success');
-          }).catch(function () {
-            toast(id, 'info');
-          });
-        } else {
-          toast(id, 'info');
-        }
-      });
-    }
-  }
-
-  /* ==================================================================
-   * The log
-   *
-   * The lines are kept by the program, not by the page: the window
-   * can be closed and the lines are still there when it opens again.
-   * ================================================================== */
-
-  var logEntries = [];
-
-  /** The time of the day a line was written. */
-  function logTime(entry) {
-    try {
-      return new Date(entry.time || Date.now()).toLocaleTimeString();
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function renderLogs() {
-    var list = $('#log-list');
-    if (!list) return;
-    list.innerHTML = '';
-    if (!logEntries.length) {
-      list.appendChild(el('p', 'log-empty', t('log.empty')));
-    } else {
-      logEntries.forEach(function (entry) {
-        var row = el('div', 'log-row log-' + (entry.level || 'info'));
-        row.appendChild(el('span', 'log-time', logTime(entry)));
-        row.appendChild(el('span', 'log-message', entry.message || ''));
-        list.appendChild(row);
-      });
-    }
-    var count = $('#log-count');
-    if (count) count.textContent = t('log.count', { count: logEntries.length });
-    list.scrollTop = list.scrollHeight;
-  }
-
-  function addLogEntry(entry) {
-    if (!entry) return;
-    logEntries.push(entry);
-    if (logEntries.length > 500) logEntries.shift();
-    renderLogs();
-  }
-
-  function loadLogs() {
-    bridge.call('getLogs').then(function (result) {
-      logEntries = (result && result.entries) || [];
-      renderLogs();
-    }).catch(function () {});
-  }
-
-  function clearLogs() {
-    bridge.call('clearLogs').then(function () {
-      logEntries = [];
-      renderLogs();
-    }).catch(function () {});
-  }
-
-  function openLogs() {
-    show($('#log-panel'));
-    loadLogs();
-  }
-
-  function closeLogs() {
-    hide($('#log-panel'));
-  }
-
-  /** Tell what the tracker of this machine is doing. */
-  function refreshTrackerNote() {
-    var note = $('#settings-tracker-note');
-    if (!note) return;
-    bridge.call('trackerInfo').then(function (info) {
-      if (!info) return;
-      if (info.local) {
-        if (info.running) {
-          note.textContent = info.lanUrl
-            ? t('settings.tracker.running', { address: info.lanUrl })
-            : t('settings.tracker.runningNoLan');
-        } else {
-          note.textContent = t('settings.tracker.stopped');
-        }
-      } else {
-        note.textContent = t('settings.tracker.elsewhere', { url: info.url || '' });
-      }
-    }).catch(function () {});
-  }
-
-  /** Write a line into the log of the program. */
-  function writeLog(level, message) {
-    if (!message) return;
-    if (bridge.isNative()) {
-      bridge.call('log', { level: level, message: message }).catch(function () {});
-    }
-  }
-
-  /** The buttons of the log panel. */
   function wireLogPanel() {
-    var open = $('#toolbar-logs');
-    if (open) open.addEventListener('click', openLogs);
-    var close = $('#log-close');
-    if (close) close.addEventListener('click', closeLogs);
-    var clear = $('#log-clear');
-    if (clear) clear.addEventListener('click', clearLogs);
+    bind($('#log-close'), 'click', closeDrawer);
+    bind($('#log-clear'), 'click', clearLogs);
   }
 
   /* ==================================================================
-   * Init
+   * Start
    * ================================================================== */
 
   function init() {
@@ -2847,76 +1342,24 @@
     applyI18n();
     updateLangLabel();
     writeSettingsForm();
-    renderCloudKeys();
-    renderQueue();
 
     wireTopbar();
-    wireConnectView();
-    wireShareView();
+    wireMyDevice();
+    wireDeviceList();
+    wireAccessDialog();
     wireRemoteToolbar();
-    wireToolbarAutoShow();
     wireSettingsPanel();
-    wireFileDrawer();
-    wireTerminal();
-    wireKeymapModal();
-    wireOverlays();
-    wireRemoteInput();
-    wireResizeHandling();
-    wireGlobalKeys();
-    wireConfirm();
-    wireFileDrop();
     wireLogPanel();
+    wireRemoteInput();
 
-    // Backend events.
-    bridge.on('connection', handleConnectionEvent);
-    bridge.on('frame', renderFrame);
-    bridge.on('toast', function (p) {
-      if (p && p.message) toast(p.message, p.kind || 'info');
-    });
-    bridge.on('screens', function (p) {
-      state.screens = normaliseScreens((p && p.screens) || p || []);
-      renderScreenMenu();
-      applyScreen(state.screenIndex);
-    });
-    bridge.on('terminal', function (p) {
-      if (p && p.data) {
-        String(p.data).split('\n').forEach(function (line) { if (line) terminalWrite(line, 'term-out'); });
-      }
-    });
-    bridge.on('files', function (p) { renderFiles((p && p.files) || p || []); });
-    bridge.on('log', function (entry) { addLogEntry(entry); });
-    bridge.on('window', function (p) {
-      // The window was closed but the program is still running: the
-      // share keeps going and the icon in the corner is the way back.
-      if (p && p.state === 'hidden') {
-        writeLog('info', t('window.hidden'));
-        toast(t('window.hidden'), 'info');
-      }
-    });
-    bridge.on('host', handleHostEvent);
-    bridge.on('cliInstall', function (p) {
-      // The command line tool is put on the PATH when the program
-      // starts; the person is told where it went.
-      if (p && p.ok && p.message) toast(p.message, 'info');
-      else if (p && p.message) toast(p.message, 'warning');
-    });
-    bridge.on('disconnect', function () {
-      state.connected = false;
-      stopStatusPoll();
-      setConnectionStatus('closed');
-      toast(t('toast.disconnected'), 'info');
-      leaveRemoteView();
-    });
-
-    // The backend says in its own words that a part of the program
-    // is not there yet.  The page has its own wording for it, so the
-    // error is turned into that wording once, here, and every caller
-    // sees the same thing.
+    // The backend says in its own words that a part of the program is
+    // not there yet.  The page has its own wording for it, so the
+    // error is turned into that wording once, here.
     var nativeCall = bridge.call;
     bridge.call = function (command, payload) {
       return nativeCall(command, payload).catch(function (error) {
         if (error && error.code === 'notImplemented') {
-          var ready = new Error(t('toast.notReady'));
+          var ready = new Error(t('remote.notReady'));
           ready.code = 'notImplemented';
           throw ready;
         }
@@ -2924,48 +1367,75 @@
       });
     };
 
-    // MOCK: seed the device list so the screen is not empty.
+    bridge.on('connection', handleConnectionEvent);
+    bridge.on('frame', renderFrame);
+    bridge.on('host', handleHostEvent);
+    bridge.on('settings', handleSettingsEvent);
+    bridge.on('screens', function (payload) {
+      state.screens = normaliseScreens((payload && payload.screens) || payload || []);
+      renderScreenMenu();
+    });
+    bridge.on('toast', function (payload) {
+      if (payload && payload.message) toast(payload.message, payload.kind || 'info');
+    });
+    bridge.on('disconnect', function () {
+      state.connected = false;
+      leaveRemoteView();
+      toast(t('toast.disconnected'), 'info');
+    });
+    bridge.on('quit', function () {
+      toast(t('toast.quit'), 'info');
+    });
+    bridge.on('log', function (entry) {
+      if (!entry) return;
+      state.logs.push(entry);
+      renderLogs();
+    });
+
+    renderMyDevice();
+    renderDevices();
+    renderVerify();
+    paintStatus();
     loadDevices();
 
-    // The mock badge is only for when there is no backend: that is
-    // when the page is opened in a browser on its own.  With the real
-    // program behind it, the badge is a lie and is taken away.
+    // The badge is only for when there is no backend: that is when
+    // the page is opened in a browser on its own.
     var mockBadge = $('#footer-mock');
     if (mockBadge) mockBadge.hidden = bridge.isNative();
 
-    // The settings the backend has on disk.  Everything it gives
-    // is taken: the file is the truth, not the page.
-    bridge.call('getSettings').then(function (s) {
-      if (s && Object.keys(s).length) {
-        state.backendSettings = s;
-        Object.keys(s).forEach(function (key) {
-          state.settings[key] = s[key];
-        });
-        writeSettingsForm();
-        fillShareForm();
-      }
-    });
+    // The settings the backend has on disk.  Everything it gives is
+    // taken: the file is the truth, not the page.
+    bridge.call('getSettings').then(function (settings) {
+      if (settings && Object.keys(settings).length) handleSettingsEvent(settings);
+    }).catch(function () { /* no settings yet */ });
 
     // What the tracker of this machine is doing.
-    refreshTrackerNote();
+    bridge.call('trackerInfo').then(function (info) {
+      state.trackerInfo = info || null;
+      renderMyDevice();
+    }).catch(function () { /* no tracker */ });
+
+    // Whether this machine is already sharing.
+    bridge.call('hostStatus').then(function (result) {
+      if (result && result.sharing) {
+        state.sharing = true;
+        state.hostState = 'waiting';
+      }
+      renderMyDevice();
+    }).catch(function () { /* not sharing */ });
 
     // The version the program really is.
     bridge.call('appInfo').then(function (info) {
-      if (!info || !info.version) return;
-      var footer = $('#footer-version');
-      if (footer) footer.textContent = info.name + ' ' + info.version;
-    }).catch(function () {});
+      if (!info) return;
+      var version = info.name ? info.name + ' ' + info.version : info.version;
+      setText($('#footer-version'), version);
+      setText($('#settings-version'), version);
+    }).catch(function () { /* no version */ });
 
     // The command line tool can open the window and go straight to a
     // device: "skycremote control --id something".
     var start = global.__SKYCREMOTE_START__;
-    if (start && start.connectTo) {
-      var input = $('#device-id-input');
-      if (input) input.value = start.connectTo;
-      startConnect(start.connectTo);
-    }
-
-    global.skycremote = api;
+    if (start && start.connectTo) requestConnect(start.connectTo);
   }
 
   if (document.readyState === 'loading') {
