@@ -10,10 +10,12 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const uiDir = new URL('../crates/skycremote-app/ui/', import.meta.url).pathname;
+const backendPath = new URL('../crates/skycremote-app/src/backend.rs', import.meta.url).pathname;
 
 const html = readFileSync(uiDir + 'index.html', 'utf8');
 const appJs = readFileSync(uiDir + 'app.js', 'utf8');
 const i18nJs = readFileSync(uiDir + 'i18n.js', 'utf8');
+const backendJs = readFileSync(backendPath, 'utf8');
 
 let failures = 0;
 
@@ -100,7 +102,35 @@ check('表里没有用不到的键', unusedKeys.length === 0, unusedKeys.join(',
 console.log('\n  一共 ' + allKeys.length + ' 个键，' + zhKeys.size + ' 个中文，' + enKeys.size + ' 个英文');
 
 /* ------------------------------------------------------------------
- * 3. 不该留的东西
+ * 3. 命令：前端叫的，后端得认
+ * ------------------------------------------------------------------ */
+
+console.log('\n== 命令 ==');
+
+// 后端 dispatch 里那张表。写成一个 match 的样子，所以这里只需要找出
+// 那些带引号的命令名。
+const backendCommands = new Set(
+  [...backendJs.matchAll(/"([a-zA-Z][a-zA-Z0-9]*)"\s*=>/g)].map((m) => m[1])
+);
+
+// 前端叫的命令。
+const called = [...new Set(
+  [...appJs.matchAll(/bridge\.call\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+)];
+
+const unknown = called.filter((name) => !backendCommands.has(name));
+check(
+  '前端叫的命令后端都认',
+  unknown.length === 0,
+  unknown.join(', ')
+);
+
+// 后端认了但前端从来不叫的，是白写在后端的。留几个是给命令行工具
+// 用的，不算错。
+console.log('  前端一共叫了 ' + called.length + ' 个命令');
+
+/* ------------------------------------------------------------------
+ * 4. 不该留的东西
  * ------------------------------------------------------------------ */
 
 console.log('\n== 旧东西 ==');
