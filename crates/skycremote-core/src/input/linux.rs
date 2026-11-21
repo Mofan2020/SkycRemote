@@ -717,7 +717,9 @@ mod tests {
         // that says it cannot, so the source is held to the read-back:
         // the call must not be taken as an answer, the mapping must be read
         // back, and the read-back must be freed.
-        let source = include_str!("linux.rs");
+        // 行尾统一成 LF：Windows 上 core.autocrlf 会把检出后的文件变成 CRLF，
+        // 那样按 "\n}\n" 找块边界会找不到，测试在 CI 上红而在本机绿。
+        let source = include_str!("linux.rs").replace("\r\n", "\n");
         let start = source.find("fn set_keysyms").expect("set_keysyms is here");
         let rest = &source[start..];
         let end = rest.find("fn spare_key").expect("spare_key follows it");
@@ -752,7 +754,8 @@ mod tests {
         // 查键位表查出来的。按完就还原的话，正常节奏的客户端读到的都是
         // 空键符 —— 事件到了，字一个也出不来。所以借用期间不许还，
         // 还的那一处只准出现在 Drop 里。
-        let source = include_str!("linux.rs");
+        // 行尾统一成 LF，理由同上一条守卫测试。
+        let source = include_str!("linux.rs").replace("\r\n", "\n");
         let borrow_start = source
             .find("fn post_with_borrowed_key")
             .expect("the borrowing function is here");
