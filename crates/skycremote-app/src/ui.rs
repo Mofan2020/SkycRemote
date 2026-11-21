@@ -207,6 +207,24 @@ const BOOTSTRAP: &str = r#"
 })();
 "#;
 
+/// Take the icon out of the Dock.
+///
+/// The window is away, and the Dock icon would be a trap: clicking it
+/// does nothing, because the program never hears about being opened
+/// again.  The icon in the menu bar is the way back.
+#[cfg(target_os = "macos")]
+fn hide_from_dock<T>(target: &tao::event_loop::EventLoopWindowTarget<T>) {
+    use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS};
+    target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
+}
+
+/// Put the icon back into the Dock.
+#[cfg(target_os = "macos")]
+fn show_in_dock<T>(target: &tao::event_loop::EventLoopWindowTarget<T>) {
+    use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS};
+    target.set_activation_policy_at_runtime(ActivationPolicy::Regular);
+}
+
 /// Open the window and run until it is closed.
 pub fn run(options: Options) -> Result<()> {
     let event_loop = EventLoop::new();
@@ -303,7 +321,7 @@ pub fn run(options: Options) -> Result<()> {
     let probe = options.probe;
     let mut probe_asked = false;
 
-    event_loop.run(move |event, target, control_flow| {
+    event_loop.run(move |event, _target, control_flow| {
         // The window wakes up now and then to hand the answers over.
         *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL);
 
@@ -355,12 +373,7 @@ pub fn run(options: Options) -> Result<()> {
                     window.set_visible(true);
                     window.set_focus();
                     #[cfg(target_os = "macos")]
-                    {
-                        use tao::platform::macos::{
-                            ActivationPolicy, EventLoopWindowTargetExtMacOS,
-                        };
-                        target.set_activation_policy_at_runtime(ActivationPolicy::Regular);
-                    }
+                    show_in_dock(_target);
                     #[cfg(not(target_os = "linux"))]
                     if let Some(tray) = tray.as_ref() {
                         tray.set_background_note(false);
@@ -383,14 +396,11 @@ pub fn run(options: Options) -> Result<()> {
             // share keeps running, and so does the tracker.  The icon
             // in the corner is the way back.
             window.set_visible(false);
+            // The Dock icon would be a trap: clicking it does
+            // nothing at all, so it is taken away and the icon in
+            // the menu bar is the way back.
             #[cfg(target_os = "macos")]
-            {
-                use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS};
-                // The Dock icon would be a trap: clicking it does
-                // nothing at all, so it is taken away and the icon in
-                // the menu bar is the way back.
-                target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
-            }
+            hide_from_dock(_target);
             #[cfg(not(target_os = "linux"))]
             if let Some(tray) = tray.as_ref() {
                 tray.set_background_note(true);
