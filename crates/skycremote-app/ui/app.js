@@ -1088,8 +1088,12 @@
 
     renderMyDevice();
 
-    if (hostState === 'sharing') toast(t('toast.hostStarted'), 'success');
-    else if (hostState === 'stopped') toast(t('toast.hostStopped'), 'info');
+    if (hostState === 'sharing') {
+      // The event that says the other side is here carries the safety
+      // code; the one that says the share started does not.
+      if (payload.verifyCode) toast(t('toast.hostPeerJoined'), 'success');
+      else toast(t('toast.hostStarted'), 'success');
+    } else if (hostState === 'stopped') toast(t('toast.hostStopped'), 'info');
     else if (hostState === 'warning') toast(payload.message || t('toast.hostWarning'), 'warning');
   }
 
