@@ -342,6 +342,38 @@
     $('#settings-device-id').value = s.deviceId || '';
     $('#settings-device-name').value = s.deviceName || '';
     renderSavedCodes();
+    renderAutostart();
+  }
+
+  /**
+   * Show whether the program starts on its own.
+   *
+   * The switch is off until the backend says otherwise: the file that
+   * makes it happen lives on the disk, and the backend is the one that
+   * knows about it.
+   */
+  function renderAutostart() {
+    var button = $('#settings-autostart');
+    if (!button) return;
+    button.classList.toggle('is-on', !!state.autostart);
+    button.setAttribute('aria-checked', state.autostart ? 'true' : 'false');
+    setText($('#settings-autostart-text'), state.autostart
+      ? t('settings.group.autostartOn')
+      : t('settings.group.autostartOff'));
+  }
+
+  /**
+   * Turn starting on login on or off.
+   */
+  function toggleAutostart() {
+    var next = !state.autostart;
+    bridge.call('setAutostart', { enabled: next }).then(function (reply) {
+      state.autostart = !!(reply && reply.enabled);
+      renderAutostart();
+      toast((reply && reply.message) || t('settings.group.autostartOff'), state.autostart ? 'success' : 'info');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
   }
 
   function openSettings() {
@@ -1768,6 +1800,10 @@
     writeSettingsForm();
     renderMyDevice();
     paintStatus();
+    bridge.call('getAutostart').then(function (reply) {
+      state.autostart = !!(reply && reply.enabled);
+      renderAutostart();
+    }).catch(function () { /* the backend did not answer; the switch stays off */ });
   }
 
   function handleBackendEvent(eventName, payload) {
@@ -1892,6 +1928,7 @@
   function wireMyDevice() {
     bind($('#share-toggle'), 'click', toggleShare);
     bind($('#my-privacy-toggle'), 'click', toggleHostPrivacy);
+    bind($('#settings-autostart'), 'click', toggleAutostart);
     bind($('#my-copy-id'), 'click', function () {
       copyText(state.settings.deviceId);
     });

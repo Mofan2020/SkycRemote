@@ -516,3 +516,15 @@ tracker 是自己的库，不该知道窗口那边的日志长什么样，所以
 （macOS 用 osascript，Windows 用 shutdown 命令，Linux 用 systemctl）。控制端按
 之前要问一遍，问的是「立刻」还是「等一下」，因为按下去之后会话会断。
 
+
+## 开机自启：写进用户自己的地方
+
+三个系统各有一套做法：macOS 是 ~/Library/LaunchAgents 里的 plist，Windows 是
+启动文件夹里的快捷方式，Linux 是 ~/.config/autostart 里的 desktop 文件。
+
+选的是「写在用户自己名下」这一类，不写系统目录、不装服务、不注册计划任务。代价
+是它只在这台机器的这个用户下有用；好处是不用管理员密码。一个程序自己弹密码框
+让人输管理员密码，是让人不敢再开它的最快办法。
+
+macOS 的 plist 里 KeepAlive 是 false：程序崩了就崩了，不要系统一直把它拉起来。
+Windows 的快捷方式用系统的 WScript.Shell 做，不是自己拼一个假快捷方式。

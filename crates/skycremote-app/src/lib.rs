@@ -6,6 +6,7 @@
 //! the PATH.  They are the same program, so the parts they share live
 //! here.
 
+pub mod autostart;
 pub mod backend;
 pub mod ui;
 

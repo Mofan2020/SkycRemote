@@ -633,6 +633,10 @@ impl Backend {
             "listDevices" => self.list_devices().await,
             "setQuality" | "setBitrate" | "setFramerate" => self.set_quality(command, payload),
             "togglePrivacyScreen" => self.toggle_privacy(payload).await,
+            "setAutostart" => self.set_autostart(payload),
+            "getAutostart" => Ok(json!({
+                "enabled": crate::autostart::is_enabled(),
+            })),
             "toggleHostPrivacy" => self.toggle_host_privacy(payload),
             "powerAction" => self.power_action(payload).await,
             "listFiles" => self.list_files(payload).await,
@@ -1369,6 +1373,28 @@ impl Backend {
             return Err(anyhow!("共享已经停了"));
         }
         Ok(json!({ "ok": true, "enabled": enabled }))
+    }
+
+    /// Start the program when the machine is turned on, or stop doing it.
+    ///
+    /// The setting is remembered, so that the window shows it the way it
+    /// really is the next time it opens.
+    fn set_autostart(&mut self, payload: &Value) -> Result<Value> {
+        let enabled = payload
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let report = crate::autostart::set(enabled);
+        self.settings
+            .set_number("autostart", u32::from(report.enabled));
+        self.settings.save()?;
+        self.log("info", report.message.clone());
+        Ok(json!({
+            "ok": report.enabled,
+            "enabled": report.enabled,
+            "message": report.message,
+            "path": report.path.map(|path| path.to_string_lossy().to_string()),
+        }))
     }
 
     /// Hide the picture of the other end, or show it again.

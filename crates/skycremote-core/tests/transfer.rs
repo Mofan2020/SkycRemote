@@ -103,8 +103,10 @@ async fn hear(receiver: &mut skycremote_core::transport::Receiver) -> Message {
 /// files of the other end can be reached.  The folder is emptied when
 /// the test is over.
 fn scratch(name: &str) -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").expect("there is a home folder");
-    let folder = std::path::PathBuf::from(home)
+    // The home folder is the one the program itself uses, so that the
+    // test works the same way on every system: the name of the
+    // variable that holds it is not the same everywhere.
+    let folder = skycremote_core::files::root()
         .join(format!(".skycremote-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
     std::fs::create_dir_all(&folder).expect("the scratch folder could not be made");

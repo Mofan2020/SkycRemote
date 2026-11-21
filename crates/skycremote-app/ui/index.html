@@ -470,6 +470,20 @@
       </section>
 
       <section class="set-group">
+        <h3 class="set-group-title" data-i18n="settings.group.startup">开机</h3>
+        <div class="set-row set-row-stack">
+          <label class="set-label" for="settings-autostart" data-i18n="settings.group.autostart">开机自启</label>
+          <div class="switch-row">
+            <button id="settings-autostart" class="switch" type="button" role="switch" aria-checked="false">
+              <span class="switch-track"></span>
+            </button>
+            <span class="switch-text" id="settings-autostart-text" data-i18n="settings.group.autostartOff">关</span>
+          </div>
+          <p class="set-hint" data-i18n="settings.group.autostartHint">登录以后程序自己起来，窗口可以关着</p>
+        </div>
+      </section>
+
+      <section class="set-group">
         <h3 class="set-group-title" data-i18n="settings.group.about">关于</h3>
         <div class="set-row">
           <span class="set-label" data-i18n="settings.about.version">版本</span>
