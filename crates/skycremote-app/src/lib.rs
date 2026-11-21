@@ -8,3 +8,6 @@
 
 pub mod backend;
 pub mod ui;
+
+#[cfg(not(target_os = "linux"))]
+pub mod tray;

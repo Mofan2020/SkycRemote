@@ -315,6 +315,9 @@ pub struct Backend {
     host: Option<tokio_util::sync::CancellationToken>,
     /// How to change the settings of the share that is running.
     host_updates: Option<skycremote_core::host::HostUpdates>,
+    /// The signal that stops the tracker of this machine, when this
+    /// machine is the one that runs it.
+    tracker_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The lines of the log.
     logs: Arc<Mutex<Vec<LogEntry>>>,
 }
@@ -338,6 +341,7 @@ impl Backend {
             session: None,
             host: None,
             host_updates: None,
+            tracker_cancel: None,
             logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -365,6 +369,19 @@ impl Backend {
                 }),
             );
         });
+
+        // What the program is doing when it starts, and where the
+        // settings live.
+        self.log(
+            "info",
+            format!("SkycRemote {} 起来了", env!("CARGO_PKG_VERSION")),
+        );
+        self.log("info", format!("设置文件在 {}", Settings::path().display()));
+
+        // The tracker that belongs to this machine is started here,
+        // so that the person does not have to remember a second
+        // program.
+        self.ensure_tracker();
 
         while let Some(request) = requests.recv().await {
             let answer = self.dispatch(&request.command, &request.payload).await;
@@ -402,8 +419,32 @@ impl Backend {
             "sendInput" => self.send_input(payload).await,
             "getSettings" => Ok(json!(self.settings)),
             "getLogs" => Ok(json!({ "entries": self.log_entries() })),
+            "trackerInfo" => {
+                // What the other computer has to type: the tracker of
+                // this machine is only reachable at 127.0.0.1 from
+                // here.
+                let url = self.settings.tracker();
+                let (host, port) =
+                    tracker_address(&url).unwrap_or_else(|| ("127.0.0.1".to_string(), 21115));
+                let lan = lan_address()
+                    .map(|address| format!("http://{address}:{port}"))
+                    .unwrap_or_default();
+                Ok(json!({
+                    "ok": true,
+                    "url": url,
+                    "lanUrl": lan,
+                    "local": is_local_host(&host),
+                    "running": port_is_open(&host, port),
+                }))
+            }
             "clearLogs" => {
                 self.clear_logs();
+                Ok(json!({ "ok": true }))
+            }
+            "quit" => {
+                // The person asked the program to stop.  The window
+                // sees the answer and the event, and stops.
+                self.emit("quit", json!({}));
                 Ok(json!({ "ok": true }))
             }
             "log" => {
@@ -464,7 +505,9 @@ impl Backend {
         );
         self.log("info", format!("正在连 {device_id}，Tracker {tracker}"));
 
-        let (sender, receiver) = transport::connect_direct(&tracker, &device_id).await?;
+        let (sender, receiver) = transport::connect_direct(&tracker, &device_id)
+            .await
+            .map_err(|error| anyhow!("连不上 {device_id}：{error}"))?;
 
         // Read these before the sender is put away, so that the
         // numbers are of the connection that was just made.
@@ -495,6 +538,7 @@ impl Backend {
         let had = self.session.take();
         if let Some(session) = had {
             session.sender.close();
+            self.log("info", "挂断了");
         }
         self.emit("disconnect", json!({ "reason": "the user hung up" }));
         Ok(json!({ "ok": true }))
@@ -758,6 +802,9 @@ impl Backend {
         if tracker_before != self.settings.tracker() {
             applied
                 .push("Tracker 改了，正在进行的共享还是旧的，要下次开始共享时才算数".to_string());
+            // The tracker of this machine follows the address that is
+            // written down now.
+            self.ensure_tracker();
         }
         for line in &applied {
             self.log("info", line.clone());
@@ -768,6 +815,75 @@ impl Backend {
             "settings": self.settings,
             "applied": applied,
         }))
+    }
+
+    /// Make sure there is a tracker where the settings say there is.
+    ///
+    /// A tracker that belongs to this machine is started here, so that
+    /// the person does not have to remember a second program.  A
+    /// tracker that is somewhere else is left alone: that one is
+    /// somebody else's to run.
+    fn ensure_tracker(&mut self) {
+        let url = self.settings.tracker();
+        let Some((host, port)) = tracker_address(&url) else {
+            self.log("warning", format!("Tracker 地址看不懂：{url}"));
+            return;
+        };
+        if !is_local_host(&host) {
+            self.log(
+                "info",
+                format!("Tracker 在 {url}，那是别的机器上的，本机不另起一个"),
+            );
+            return;
+        }
+        if port_is_open(&host, port) {
+            self.log("info", format!("本机的 tracker 已经在跑（{host}:{port}）"));
+            return;
+        }
+
+        // A tracker of our own that is already running is stopped
+        // first: the address may have changed.
+        if let Some(cancel) = self.tracker_cancel.take() {
+            cancel.cancel();
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.tracker_cancel = Some(cancel.clone());
+        let out = self.out.clone();
+        let logs = Arc::clone(&self.logs);
+
+        // The tracker says what it is doing, so that the log of the
+        // person shows it: who registered, who was looked for.
+        let voice_out = out.clone();
+        let voice_logs = Arc::clone(&logs);
+        skycremote_tracker::set_voice(move |message| {
+            log_to(&voice_out, &voice_logs, "info", message);
+        });
+        tokio::spawn(async move {
+            let server = skycremote_tracker::serve(port);
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    log_to(&out, &logs, "info", "本机的 tracker 停了");
+                }
+                result = server => match result {
+                    Ok(()) => log_to(&out, &logs, "info", "本机的 tracker 停了"),
+                    Err(error) => log_to(
+                        &out,
+                        &logs,
+                        "error",
+                        format!("本机的 tracker 起不来：{error}"),
+                    ),
+                }
+            }
+        });
+
+        let mut message = format!("本机的 tracker 已经起来了：http://{host}:{port}");
+        if let Some(address) = lan_address() {
+            message.push_str(&format!(
+                "；另一台电脑把 Tracker 填成 http://{address}:{port}"
+            ));
+        }
+        self.log("info", message);
     }
 
     /// The share, with the settings as they are now.
@@ -931,6 +1047,66 @@ fn log_to(
     emit_to(out, "log", payload);
 }
 
+/// The host and the port of a tracker address.
+fn tracker_address(url: &str) -> Option<(String, u16)> {
+    let rest = url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let rest = rest.split('/').next().unwrap_or("");
+    if rest.is_empty() {
+        return None;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) => (host.to_string(), port.parse().ok()?),
+        None => (rest.to_string(), 21115),
+    };
+    Some((host, port))
+}
+
+/// Whether the address points at this machine.
+fn is_local_host(host: &str) -> bool {
+    matches!(
+        host,
+        "127.0.0.1" | "localhost" | "::1" | "[::1]" | "0.0.0.0"
+    )
+}
+
+/// Whether something is listening on that port already.
+fn port_is_open(host: &str, port: u16) -> bool {
+    let target = match host {
+        "localhost" => format!("127.0.0.1:{port}"),
+        "0.0.0.0" => format!("127.0.0.1:{port}"),
+        other => format!("{other}:{port}"),
+    };
+    let Ok(address) = target.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).is_ok()
+}
+
+/// The address of this machine on the local network.
+///
+/// It is the address the other computer has to use: a tracker that
+/// runs here is only reachable at 127.0.0.1 from here.
+fn lan_address() -> Option<std::net::IpAddr> {
+    let interfaces = if_addrs::get_if_addrs().ok()?;
+    let mut other = None;
+    for interface in interfaces {
+        if interface.is_loopback() {
+            continue;
+        }
+        let std::net::IpAddr::V4(address) = interface.ip() else {
+            continue;
+        };
+        if address.is_private() || address.is_link_local() {
+            return Some(std::net::IpAddr::V4(address));
+        }
+        other.get_or_insert(std::net::IpAddr::V4(address));
+    }
+    other
+}
+
 /// The time of the day, in milliseconds since the epoch.
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -1052,6 +1228,23 @@ mod tests {
         assert_eq!(read.bitrate_mbps(), 8);
 
         let _ = std::fs::remove_dir_all(path.parent().expect("no folder"));
+    }
+
+    /// A tracker address is read the way a person writes it.
+    #[test]
+    fn a_tracker_address_is_read() {
+        assert_eq!(
+            tracker_address("http://127.0.0.1:21115"),
+            Some(("127.0.0.1".to_string(), 21115))
+        );
+        assert_eq!(
+            tracker_address("http://192.168.1.10"),
+            Some(("192.168.1.10".to_string(), 21115))
+        );
+        assert_eq!(tracker_address(""), None);
+        assert!(is_local_host("127.0.0.1"));
+        assert!(is_local_host("localhost"));
+        assert!(!is_local_host("192.168.1.10"));
     }
 
     /// A file that is not there is not an error: the program starts

@@ -487,6 +487,7 @@
     refreshQualityDisplay();
     syncToolbarDensity();
     fillShareForm();
+    refreshTrackerNote();
     writeLog('info', '设置已保存');
     toast(t('toast.settingsSaved'), 'success');
   }
@@ -2236,6 +2237,12 @@
     var resetBtn = $('#settings-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', resetSettings);
 
+    var quitBtn = $('#settings-quit-btn');
+    if (quitBtn) quitBtn.addEventListener('click', function () {
+      writeLog('info', t('window.quitting'));
+      bridge.call('quit').catch(function () {});
+    });
+
     var bitrate = $('#bitrate-slider');
     if (bitrate) {
       bitrate.addEventListener('input', function () {
@@ -2792,6 +2799,26 @@
     hide($('#log-panel'));
   }
 
+  /** Tell what the tracker of this machine is doing. */
+  function refreshTrackerNote() {
+    var note = $('#settings-tracker-note');
+    if (!note) return;
+    bridge.call('trackerInfo').then(function (info) {
+      if (!info) return;
+      if (info.local) {
+        if (info.running) {
+          note.textContent = info.lanUrl
+            ? t('settings.tracker.running', { address: info.lanUrl })
+            : t('settings.tracker.runningNoLan');
+        } else {
+          note.textContent = t('settings.tracker.stopped');
+        }
+      } else {
+        note.textContent = t('settings.tracker.elsewhere', { url: info.url || '' });
+      }
+    }).catch(function () {});
+  }
+
   /** Write a line into the log of the program. */
   function writeLog(level, message) {
     if (!message) return;
@@ -2858,6 +2885,14 @@
     });
     bridge.on('files', function (p) { renderFiles((p && p.files) || p || []); });
     bridge.on('log', function (entry) { addLogEntry(entry); });
+    bridge.on('window', function (p) {
+      // The window was closed but the program is still running: the
+      // share keeps going and the icon in the corner is the way back.
+      if (p && p.state === 'hidden') {
+        writeLog('info', t('window.hidden'));
+        toast(t('window.hidden'), 'info');
+      }
+    });
     bridge.on('host', handleHostEvent);
     bridge.on('cliInstall', function (p) {
       // The command line tool is put on the PATH when the program
@@ -2910,6 +2945,9 @@
         fillShareForm();
       }
     });
+
+    // What the tracker of this machine is doing.
+    refreshTrackerNote();
 
     // The version the program really is.
     bridge.call('appInfo').then(function (info) {

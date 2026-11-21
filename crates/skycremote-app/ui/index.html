@@ -472,6 +472,7 @@
           <label class="set-label" for="settings-tracker" data-i18n="settings.group.tracker">Tracker 地址</label>
           <input id="settings-tracker" class="input" type="text" spellcheck="false" placeholder="http://127.0.0.1:21115">
           <p class="set-hint" data-i18n="settings.group.tracker.hint">控制和共享都用这一个地址，两台电脑要连到同一个 Tracker</p>
+          <p class="set-hint" id="settings-tracker-note"></p>
         </div>
 
         <div class="set-row set-row-stack">
@@ -671,6 +672,9 @@
     </div>
 
     <footer class="drawer-foot">
+      <button id="settings-quit-btn" class="btn btn-ghost" type="button">
+        <span class="icon" data-icon="power"></span><span data-i18n="window.quit">退出 SkycRemote</span>
+      </button>
       <button id="settings-reset-btn" class="btn btn-ghost" type="button">
         <span class="icon" data-icon="rotate"></span><span data-i18n="common.reset">Reset</span>
       </button>

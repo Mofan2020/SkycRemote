@@ -222,6 +222,15 @@ pub fn run(options: Options) -> Result<()> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<UiRequest>();
     // The answers and the events go back this way.
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
+    // The window keeps a copy of the way out, so that it can tell the
+    // page that the window was closed while the program keeps going.
+    let window_tx = out_tx.clone();
+
+    // The icon in the corner of the screen.  It is made inside the
+    // event loop, because on macOS it has to be made while the loop
+    // is already running.
+    #[cfg(not(target_os = "linux"))]
+    let mut tray: Option<crate::tray::Tray> = None;
 
     // The page says when it has finished loading.  The probe needs
     // that, because it must not ask the backend anything before the
@@ -294,9 +303,16 @@ pub fn run(options: Options) -> Result<()> {
     let probe = options.probe;
     let mut probe_asked = false;
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         // The window wakes up now and then to hand the answers over.
         *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL);
+
+        // The icon in the corner is made here, not before: on macOS
+        // it has to be made while the event loop is already running.
+        #[cfg(not(target_os = "linux"))]
+        if tray.is_none() {
+            tray = crate::tray::Tray::make();
+        }
 
         // The probe asks once, as soon as the page can hear the answer.
         if probe && !probe_asked && page_loaded.load(Ordering::SeqCst) {
@@ -320,12 +336,69 @@ pub fn run(options: Options) -> Result<()> {
             });
         }
 
+        // The icon in the corner: what the person did with it.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let mut action = crate::tray::Action::Nothing;
+            while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+                if let Some(tray) = tray.as_ref() {
+                    action = tray.action(&event);
+                }
+            }
+            while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+                if let Some(tray) = tray.as_ref() {
+                    action = tray.menu_action(&event);
+                }
+            }
+            match action {
+                crate::tray::Action::Show => {
+                    window.set_visible(true);
+                    window.set_focus();
+                    #[cfg(target_os = "macos")]
+                    {
+                        use tao::platform::macos::{
+                            ActivationPolicy, EventLoopWindowTargetExtMacOS,
+                        };
+                        target.set_activation_policy_at_runtime(ActivationPolicy::Regular);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    if let Some(tray) = tray.as_ref() {
+                        tray.set_background_note(false);
+                    }
+                }
+                crate::tray::Action::Quit => {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                crate::tray::Action::Nothing => {}
+            }
+        }
+
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
             ..
         } = event
         {
-            *control_flow = ControlFlow::Exit;
+            // Closing the window is not stopping the program: the
+            // share keeps running, and so does the tracker.  The icon
+            // in the corner is the way back.
+            window.set_visible(false);
+            #[cfg(target_os = "macos")]
+            {
+                use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS};
+                // The Dock icon would be a trap: clicking it does
+                // nothing at all, so it is taken away and the icon in
+                // the menu bar is the way back.
+                target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
+            }
+            #[cfg(not(target_os = "linux"))]
+            if let Some(tray) = tray.as_ref() {
+                tray.set_background_note(true);
+            }
+            let _ = window_tx.send(Out::Event {
+                name: "window".to_string(),
+                payload: serde_json::json!({ "state": "hidden" }),
+            });
             return;
         }
 
@@ -341,6 +414,13 @@ pub fn run(options: Options) -> Result<()> {
                     }
                 }
                 Ok(Out::Event { name, payload }) => {
+                    // The backend asks the program to stop: that is
+                    // the button in the settings, and it is the only
+                    // way to stop it for good.
+                    if name == "quit" {
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
                     if probe {
                         eprintln!("PROBE: 事件 {} {}", name, payload);
                     }

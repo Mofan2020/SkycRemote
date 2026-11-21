@@ -22,7 +22,31 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// What the tracker says when it does something.
+type Voice = Box<dyn Fn(&str) + Send + Sync>;
+
+/// The place where the tracker says what it is doing.
+///
+/// It is set once, by the program that runs the tracker inside the
+/// window: that is where the log of the person lives.  The tracker
+/// itself only needs to say the words.
+static VOICE: OnceLock<Voice> = OnceLock::new();
+
+/// Let the tracker say what it is doing.
+///
+/// The tracker only ever talks about addresses, so a line is short.
+pub fn set_voice(voice: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = VOICE.set(Box::new(voice));
+}
+
+/// Say one line, if somebody is listening.
+fn say(message: &str) {
+    if let Some(voice) = VOICE.get() {
+        voice(message);
+    }
+}
 
 /// The state the tracker keeps.
 #[derive(Clone, Default)]
@@ -124,12 +148,13 @@ async fn register(
     devices.insert(
         body.id.clone(),
         Device {
-            id: body.id,
+            id: body.id.clone(),
             name: body.name,
             address: SocketAddr::new(from.ip(), body.port),
             last_seen: now_ms(),
         },
     );
+    say(&format!("登记：{}（{}:{}）", body.id, from.ip(), body.port));
     Json(RegisterReply { ok: true })
 }
 
@@ -152,11 +177,12 @@ async fn address(
         .entry(body.id.clone())
         .and_modify(|device| device.last_seen = now)
         .or_insert(Device {
-            id: body.id,
+            id: body.id.clone(),
             name: String::new(),
             address: from,
             last_seen: now,
         });
+    say(&format!("问自己的地址：{}（{from}）", body.id));
     Json(AddressAnswer { address: from })
 }
 
@@ -170,14 +196,20 @@ async fn peer(State(inner): State<Inner>, Json(body): Json<PeerQuestion>) -> Jso
     let stale = now_ms().saturating_sub(120_000);
     devices.retain(|_, device| device.last_seen > stale);
     match devices.get(&body.id) {
-        Some(device) => Json(PeerAnswer {
-            online: true,
-            address: device.address,
-        }),
-        None => Json(PeerAnswer {
-            online: false,
-            address: SocketAddr::from(([0, 0, 0, 0], 0)),
-        }),
+        Some(device) => {
+            say(&format!("问 {} 在哪：在线（{}）", body.id, device.address));
+            Json(PeerAnswer {
+                online: true,
+                address: device.address,
+            })
+        }
+        None => {
+            say(&format!("问 {} 在哪：不在线", body.id));
+            Json(PeerAnswer {
+                online: false,
+                address: SocketAddr::from(([0, 0, 0, 0], 0)),
+            })
+        }
     }
 }
 
