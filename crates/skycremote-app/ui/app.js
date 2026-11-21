@@ -2113,7 +2113,6 @@
     bind($('#share-toggle'), 'click', toggleShare);
     bind($('#my-privacy-toggle'), 'click', toggleHostPrivacy);
     bind($('#settings-autostart'), 'click', toggleAutostart);
-    bind($('#btn-trust'), 'click', requestTrust);
     bind($('#trust-confirm'), 'click', approveTrust);
     bind($('#trust-cancel'), 'click', closeTrustDialog);
     bind($('#my-copy-id'), 'click', function () {
@@ -2225,6 +2224,10 @@
       closeMenus();
       notReady();
     };
+    bind($('#btn-trust'), 'click', function () {
+      closeMenus();
+      requestTrust();
+    });
     bind($('#btn-terminal'), 'click', notReadyHandler);
     bind($('#btn-cloud-keyboard'), 'click', notReadyHandler);
     bind($('#btn-gamepad'), 'click', notReadyHandler);
