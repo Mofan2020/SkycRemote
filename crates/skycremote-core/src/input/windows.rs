@@ -230,12 +230,20 @@ pub fn unicode_units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-/// 线上来的滚轮量 → 滚了几格。
+/// 一整格滚轮折多少像素。
 ///
-/// 线上走的是「行数」，这里把它变成整数格数；不到一格的部分不算，
-/// 否则轻轻碰一下滚轮就会跳一格。
-pub fn wheel_steps(value: f32) -> i32 {
-    value.trunc() as i32
+/// 浏览器一个滚轮刻度给 100 像素左右。X11 和 Windows 都只能按「格」发，
+/// 所以这里要把像素折成格。
+pub const PIXELS_PER_NOTCH: f32 = 100.0;
+
+/// 攒下来的像素 + 这次的像素 → 这次发几格、还剩多少零头。
+///
+/// 零头必须留着：轻轻滚一下只有几十像素，直接截断成 0 格，慢慢滚就一点
+/// 反应都没有。返回的第二个值是留给下一次的余量。
+pub fn take_notches(remainder: f32, pixels: f32) -> (i32, f32) {
+    let total = remainder + pixels;
+    let steps = (total / PIXELS_PER_NOTCH).trunc();
+    (steps as i32, total - steps * PIXELS_PER_NOTCH)
 }
 
 /// 滚了几格 → Windows 的滚轮单位。
@@ -309,13 +317,21 @@ fn mouse_input(dx: i32, dy: i32, data: u32, flags: u32) -> INPUT {
 /// 这里不记任何状态：Windows 的修饰键就是真的按下去、松开来，
 /// 系统自己知道现在按着哪些键。
 #[cfg(target_os = "windows")]
-pub struct WindowsInjector;
+pub struct WindowsInjector {
+    /// 滚轮攒下的零头（像素），竖直方向。
+    scroll_y: std::cell::Cell<f32>,
+    /// 滚轮攒下的零头（像素），水平方向。
+    scroll_x: std::cell::Cell<f32>,
+}
 
 #[cfg(target_os = "windows")]
 impl WindowsInjector {
     /// 做好一个注入器。
     pub fn new() -> Result<Self, InputError> {
-        Ok(Self)
+        Ok(Self {
+            scroll_y: std::cell::Cell::new(0.0),
+            scroll_x: std::cell::Cell::new(0.0),
+        })
     }
 
     /// 把一组输入事件送进系统。
@@ -411,11 +427,13 @@ impl WindowsInjector {
     ) -> Result<(), InputError> {
         self.move_mouse(screen, x, y)?;
         let mut inputs = Vec::new();
-        let vertical = wheel_steps(dy);
+        let (vertical, rest_y) = take_notches(self.scroll_y.get(), dy);
+        self.scroll_y.set(rest_y);
         if vertical != 0 {
             inputs.push(mouse_input(0, 0, wheel_units(vertical), win_flag::WHEEL));
         }
-        let horizontal = wheel_steps(dx);
+        let (horizontal, rest_x) = take_notches(self.scroll_x.get(), dx);
+        self.scroll_x.set(rest_x);
         if horizontal != 0 {
             inputs.push(mouse_input(0, 0, wheel_units(horizontal), win_flag::HWHEEL));
         }
@@ -588,9 +606,27 @@ mod tests {
         assert_eq!(wheel_units(0), 0);
         // Turning the other way is the same bits with the sign turned.
         assert_eq!(wheel_units(-1), u32::MAX - 119);
-        assert_eq!(wheel_steps(3.7), 3);
-        assert_eq!(wheel_steps(-3.7), -3);
-        assert_eq!(wheel_steps(0.4), 0);
+    }
+
+    /// 浏览器一格滚轮约 100 像素，要变成一格，不是一百格。
+    #[test]
+    fn a_wheel_notch_becomes_one_step_not_a_hundred() {
+        assert_eq!(take_notches(0.0, 100.0), (1, 0.0));
+        assert_eq!(take_notches(0.0, -100.0), (-1, 0.0));
+        assert_eq!(take_notches(0.0, 0.0), (0, 0.0));
+    }
+
+    /// 零头要留到下一次，不然轻轻滚一直凑不满一格，手感像卡住。
+    #[test]
+    fn a_small_scroll_is_carried_over_until_it_makes_a_step() {
+        let (first, rest) = take_notches(0.0, 40.0);
+        assert_eq!(first, 0);
+        assert!((rest - 40.0).abs() < 0.001);
+
+        let (second, rest) = take_notches(rest, 40.0);
+        assert_eq!(second, 0);
+        let (third, _) = take_notches(rest, 40.0);
+        assert_eq!(third, 1, "三次 40 像素要凑出一格");
     }
 
     /// The table has to agree with the system it talks to.  This only

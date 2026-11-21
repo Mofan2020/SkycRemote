@@ -91,7 +91,11 @@ const FLAG_ALTERNATE: u64 = 0x0008_0000;
 const FLAG_COMMAND: u64 = 0x0010_0000;
 
 /// 滚轮按行算，不按像素。
-const SCROLL_UNITS_LINES: u32 = 1;
+/// 滚轮按像素走，不按行。
+///
+/// 按行的话一格滚轮会变成一大段；控制端送来的本来就是像素量，
+/// 直接按像素投进去，手感和本机摸到的一致。
+const SCROLL_UNITS_PIXEL: u32 = 0;
 
 /// DOM 的键码 → macOS 的虚拟键码。
 ///
@@ -306,7 +310,7 @@ impl Injector for MacosInjector {
                 unsafe {
                     let event = CGEventCreateScrollWheelEvent(
                         self.source,
-                        SCROLL_UNITS_LINES,
+                        SCROLL_UNITS_PIXEL,
                         2,
                         *dy as i32,
                         *dx as i32,

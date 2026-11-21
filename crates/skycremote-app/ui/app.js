@@ -1057,7 +1057,17 @@
       if (!state.connected) return;
       e.preventDefault();
       var p = pointerToRemote(e);
-      sendInput({ type: 'Scroll', dx: e.deltaX, dy: e.deltaY, x: p.x, y: p.y });
+      // 浏览器可能给像素（deltaMode 0）、行（1）、页（2）。后端按像素算，
+      // 不换算的话 Firefox 那种「行」的量会小得看起来像没反应。
+      var scale =
+        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 16 * 25 : 1;
+      sendInput({
+        type: 'Scroll',
+        dx: e.deltaX * scale,
+        dy: e.deltaY * scale,
+        x: p.x,
+        y: p.y
+      });
     }, { passive: false });
 
     stage.addEventListener('contextmenu', function (e) {

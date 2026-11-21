@@ -178,12 +178,20 @@ pub fn mouse_button(button: u8) -> Option<u32> {
     })
 }
 
-/// 线上来的滚轮量 → 滚了几格。
+/// 一整格滚轮折多少像素。
 ///
-/// 线上走的是「行数」，这里把它变成整数格数；不到一格的部分不算，
-/// 否则轻轻碰一下滚轮就会跳一格。
-pub fn wheel_steps(value: f32) -> i32 {
-    value.trunc() as i32
+/// 浏览器一个滚轮刻度给 100 像素左右。X11 的滚轮是四个额外按钮，
+/// 只能按「格」按，所以这里要把像素折成格。
+pub const PIXELS_PER_NOTCH: f32 = 100.0;
+
+/// 攒下来的像素 + 这次的像素 → 这次按几格、还剩多少零头。
+///
+/// 零头必须留着：轻轻滚一下只有几十像素，直接截断成 0 格，慢慢滚就一点
+/// 反应都没有。返回的第二个值是留给下一次的余量。
+pub fn take_notches(remainder: f32, pixels: f32) -> (i32, f32) {
+    let total = remainder + pixels;
+    let steps = (total / PIXELS_PER_NOTCH).trunc();
+    (steps as i32, total - steps * PIXELS_PER_NOTCH)
 }
 
 #[cfg(target_os = "linux")]
@@ -237,6 +245,10 @@ pub struct LinuxInjector {
     xtest: XTest,
     /// 专门用来打字的键位，以及它原来的键符。
     spare: Option<SpareKey>,
+    /// 滚轮攒下的零头（像素），竖直方向。
+    scroll_y: std::cell::Cell<f32>,
+    /// 滚轮攒下的零头（像素），水平方向。
+    scroll_x: std::cell::Cell<f32>,
 }
 
 // The X11 connection is a plain pointer, so the compiler cannot know it
@@ -297,6 +309,8 @@ impl LinuxInjector {
             xlib,
             xtest,
             spare: None,
+            scroll_y: std::cell::Cell::new(0.0),
+            scroll_x: std::cell::Cell::new(0.0),
         })
     }
 
@@ -525,7 +539,8 @@ impl LinuxInjector {
         y: u32,
     ) -> Result<(), InputError> {
         self.move_mouse(screen, x, y)?;
-        let vertical = wheel_steps(dy);
+        let (vertical, rest_y) = take_notches(self.scroll_y.get(), dy);
+        self.scroll_y.set(rest_y);
         if vertical != 0 {
             let button = if vertical > 0 { 4 } else { 5 };
             for _ in 0..vertical.unsigned_abs() {
@@ -533,7 +548,8 @@ impl LinuxInjector {
                 self.fake_button(button, false)?;
             }
         }
-        let horizontal = wheel_steps(dx);
+        let (horizontal, rest_x) = take_notches(self.scroll_x.get(), dx);
+        self.scroll_x.set(rest_x);
         if horizontal != 0 {
             let button = if horizontal > 0 { 7 } else { 6 };
             for _ in 0..horizontal.unsigned_abs() {
@@ -704,9 +720,20 @@ mod tests {
 
     #[test]
     fn the_wheel_turns_in_whole_steps() {
-        assert_eq!(wheel_steps(3.7), 3);
-        assert_eq!(wheel_steps(-3.7), -3);
-        assert_eq!(wheel_steps(0.4), 0);
+        assert_eq!(take_notches(0.0, 100.0), (1, 0.0));
+        assert_eq!(take_notches(0.0, -100.0), (-1, 0.0));
+        assert_eq!(take_notches(0.0, 0.0), (0, 0.0));
+    }
+
+    /// 轻滚一下凑不满一格，零头要留到下一次，不然慢慢滚永远不动。
+    #[test]
+    fn a_small_scroll_is_carried_over_until_it_makes_a_step() {
+        let (first, rest) = take_notches(0.0, 40.0);
+        assert_eq!(first, 0);
+        let (second, rest) = take_notches(rest, 40.0);
+        assert_eq!(second, 0);
+        let (third, _) = take_notches(rest, 40.0);
+        assert_eq!(third, 1, "三次 40 像素要凑出一格");
     }
 
     #[test]

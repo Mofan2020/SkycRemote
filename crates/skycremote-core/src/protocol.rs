@@ -181,10 +181,15 @@ pub enum InputEvent {
         y: u32,
     },
     /// The wheel turned.
+    ///
+    /// The amounts are in **pixels**, normalised by the controller from whatever
+    /// `deltaMode` the browser used. Each platform converts from pixels to its own
+    /// unit at the last moment: Windows and X11 can only turn the wheel a whole notch
+    /// at a time, so they carry the leftover pixels over to the next event.
     Scroll {
-        /// How far it turned horizontally.
+        /// How far it turned horizontally, in pixels.
         dx: f32,
-        /// How far it turned vertically.
+        /// How far it turned vertically, in pixels.
         dy: f32,
         /// The position in the captured screen's pixels.
         x: u32,
