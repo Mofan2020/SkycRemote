@@ -8,6 +8,7 @@
 
 pub mod autostart;
 pub mod backend;
+pub mod trust;
 pub mod ui;
 
 #[cfg(not(target_os = "linux"))]

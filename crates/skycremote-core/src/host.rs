@@ -24,7 +24,7 @@ use crate::capture::{self, Screen};
 use crate::clipboard;
 use crate::encode::EncoderConfig;
 use crate::files;
-use crate::handshake::{self, HostIdentity};
+use crate::handshake::{self, HostIdentity, TrustedMachine};
 use crate::input;
 use crate::pipeline::{self, ScreenSource};
 use crate::power::{self, PowerAction};
@@ -33,7 +33,7 @@ use crate::transfer;
 use crate::transport;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// How long to wait for the other end before trying again.
 ///
@@ -81,6 +81,30 @@ pub enum HostEvent {
         /// What to say.
         message: String,
     },
+    /// The machine on the other end asks to be remembered.
+    ///
+    /// It wants to come in without the access code next time.  The
+    /// owner of this machine decides whether it may, so the window is
+    /// told and asked.
+    TrustRequested {
+        /// The id of the machine that is asking.
+        controller_id: String,
+        /// The name that machine gives itself.
+        controller_name: String,
+    },
+    /// A machine was remembered, and the value it was given.
+    ///
+    /// The value is what the other end keeps; this end keeps what the
+    /// value is turned into, so that the code itself is nowhere to be
+    /// found.
+    TrustGranted {
+        /// The id of the machine that was remembered.
+        controller_id: String,
+        /// The salt that goes with the value.
+        salt: Vec<u8>,
+        /// The value itself.
+        verifier: [u8; 32],
+    },
 }
 
 /// How the shared end is set up.
@@ -108,6 +132,11 @@ pub struct HostOptions {
     /// The code itself is not kept here, only this value.  When the
     /// controller types the code, it turns it into the same value.
     pub verifier: [u8; 32],
+    /// The machines this device has decided to remember.
+    ///
+    /// A machine in this list comes in with the value it was given,
+    /// and does not have to say the access code.
+    pub trusted: Vec<TrustedMachine>,
 }
 
 impl Default for HostOptions {
@@ -121,6 +150,7 @@ impl Default for HostOptions {
             bitrate_bps: 2_000_000,
             salt: Vec::new(),
             verifier: [0u8; 32],
+            trusted: Vec::new(),
         }
     }
 }
@@ -169,6 +199,25 @@ impl HostUpdates {
     pub fn set_privacy(&self, enabled: bool) -> bool {
         self.sender.send(HostUpdate::Privacy(enabled)).is_ok()
     }
+
+    /// Remember the machine that is asking to be remembered.
+    ///
+    /// It says whether the share was still there to be told.  The
+    /// value the machine is given is made here and handed over on the
+    /// line of the session, so it never touches the disk here.
+    pub fn grant_trust(&self, controller_id: &str) -> bool {
+        self.sender
+            .send(HostUpdate::Trust(controller_id.to_string()))
+            .is_ok()
+    }
+
+    /// The machines this device remembers, replaced by a new list.
+    ///
+    /// This is how a machine is forgotten: the list it is in is taken
+    /// out, and the new list is put in its place.
+    pub fn set_trusted(&self, trusted: Vec<TrustedMachine>) -> bool {
+        self.sender.send(HostUpdate::TrustedList(trusted)).is_ok()
+    }
 }
 
 /// A change to a share that is running.
@@ -178,6 +227,10 @@ pub enum HostUpdate {
     Options(HostOptions),
     /// The privacy screen is on or off.
     Privacy(bool),
+    /// The machine that is asking is to be remembered.
+    Trust(String),
+    /// The list of remembered machines, replaced by a new one.
+    TrustedList(Vec<TrustedMachine>),
 }
 
 /// A share that is under the control of whoever started it.
@@ -188,6 +241,11 @@ pub enum HostUpdate {
 pub struct HostService {
     /// How the share is set up.
     options: HostOptions,
+    /// The machines this device remembers.
+    ///
+    /// It sits behind a lock because the window can change it while
+    /// the share is on: a machine is remembered, or forgotten.
+    trusted: Arc<Mutex<Vec<TrustedMachine>>>,
     /// The signal that says "stop".
     cancel: CancellationToken,
     /// Where the new settings go.
@@ -201,6 +259,7 @@ impl HostService {
     pub fn new(options: HostOptions) -> Self {
         let (updates, incoming) = tokio::sync::mpsc::unbounded_channel::<HostUpdate>();
         Self {
+            trusted: Arc::new(Mutex::new(options.trusted.clone())),
             options,
             cancel: CancellationToken::new(),
             updates,
@@ -318,7 +377,14 @@ impl HostService {
             salt: self.options.salt.clone(),
             verifier: self.options.verifier,
         };
-        let session = handshake::host_handshake(&sender, &mut receiver, &identity)
+        // The machines that are remembered.  The list is taken out
+        // here so that the handshake does not keep the lock while it
+        // waits for the other end.
+        let trusted = match self.trusted.lock() {
+            Ok(list) => list.clone(),
+            Err(_) => Vec::new(),
+        };
+        let session = handshake::host_handshake(&sender, &mut receiver, &identity, &trusted)
             .await
             .context("the other end was not let in")?;
 
@@ -337,6 +403,11 @@ impl HostService {
         let _ = events.send(HostEvent::Verified {
             verify_code: session.verify_code,
         });
+
+        // Who is on the other end.  The name is only a name; the id is
+        // what the list of remembered machines is looked up by.
+        let peer_controller_id = session.controller_id.clone();
+        let peer_controller_name = session.controller_name.clone();
 
         let _ = events.send(HostEvent::PeerJoined {
             peer: sender.peer_address().to_string(),
@@ -451,6 +522,56 @@ impl HostService {
                             privacy.store(enabled, Ordering::Relaxed);
                             let _ = send(&sender, &Message::PrivacyScreen { enabled }).await;
                             let _ = events.send(HostEvent::Privacy { enabled });
+                        }
+                        Some(HostUpdate::Trust(controller_id)) => {
+                            // The other end asked to be remembered, and
+                            // the owner of this machine said yes.  A
+                            // value is made here and handed over on the
+                            // line of the session, which is already
+                            // encrypted, so it never goes through the
+                            // air in the clear.
+                            let (salt, verifier) = crate::crypto::trusted_pair();
+                            let granted = send(
+                                &sender,
+                                &Message::TrustGrant {
+                                    controller_id: controller_id.clone(),
+                                    salt: crate::crypto::base64_encode(&salt),
+                                    verifier: crate::crypto::base64_encode(&verifier),
+                                },
+                            )
+                            .await
+                            .is_ok();
+                            if !granted {
+                                // The other end is not there any more, so
+                                // the value never reached it.  It is not
+                                // remembered here either: a value that
+                                // nobody holds is of no use to anybody.
+                                let _ = events.send(HostEvent::Warning {
+                                    message: "对面已经断开了，没有记住".to_string(),
+                                });
+                                continue;
+                            }
+                            if let Ok(mut list) = self.trusted.lock() {
+                                list.retain(|machine| machine.controller_id != controller_id);
+                                list.push(TrustedMachine {
+                                    controller_id: controller_id.clone(),
+                                    salt: salt.clone(),
+                                    verifier,
+                                });
+                            }
+                            let _ = events.send(HostEvent::TrustGranted {
+                                controller_id,
+                                salt,
+                                verifier,
+                            });
+                        }
+                        Some(HostUpdate::TrustedList(list)) => {
+                            // The list of remembered machines is
+                            // replaced: this is how a machine is
+                            // forgotten.
+                            if let Ok(mut slot) = self.trusted.lock() {
+                                *slot = list;
+                            }
                         }
                         None => break,
                     }
@@ -570,6 +691,16 @@ impl HostService {
                             if let Err(error) = clipboard::write_text(&text) {
                                 eprintln!("skycremote: the clipboard was not written: {error}");
                             }
+                        }
+                        Message::TrustRequest => {
+                            // The other end wants to be remembered, so
+                            // that it does not have to say the access
+                            // code next time.  The owner of this machine
+                            // decides, so the window is told and asked.
+                            let _ = events.send(HostEvent::TrustRequested {
+                                controller_id: peer_controller_id.clone(),
+                                controller_name: peer_controller_name.clone(),
+                            });
                         }
                         Message::PrivacyScreen { enabled } => {
                             privacy.store(enabled, Ordering::Relaxed);

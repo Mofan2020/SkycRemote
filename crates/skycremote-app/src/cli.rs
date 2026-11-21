@@ -156,6 +156,7 @@ fn main() -> anyhow::Result<()> {
                                 bitrate_bps: bitrate.saturating_mul(1_000_000),
                                 salt,
                                 verifier,
+                                trusted: Vec::new(),
                             },
                         );
                         // The events are only words on the terminal
@@ -190,6 +191,22 @@ fn main() -> anyhow::Result<()> {
                                     }
 skycremote_core::host::HostEvent::Warning { message } => {
                                         eprintln!("skycremote: {message}");
+                                    }
+                                    skycremote_core::host::HostEvent::TrustRequested {
+                                        controller_id,
+                                        controller_name,
+                                    } => {
+                                        eprintln!(
+                                            "skycremote: the device {controller_name} ({controller_id}) wants to be remembered"
+                                        );
+                                    }
+                                    skycremote_core::host::HostEvent::TrustGranted {
+                                        controller_id,
+                                        ..
+                                    } => {
+                                        eprintln!(
+                                            "skycremote: the device {controller_id} is remembered"
+                                        );
                                     }
                                 }
                             }

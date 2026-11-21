@@ -117,6 +117,23 @@ pub enum Message {
         /// Whether the screen is hidden.
         enabled: bool,
     },
+    /// The controlling machine asks to be remembered.
+    ///
+    /// It wants to come in without the access code next time, so the
+    /// owner of the machine decides whether it may.
+    TrustRequest,
+    /// The machine says yes, and gives the value to keep.
+    ///
+    /// The value is enough to come in later: the access code is not
+    /// needed, and it is not kept by the controlling side either.
+    TrustGrant {
+        /// The id of the machine that is trusted.
+        controller_id: String,
+        /// The salt of the entry, in text.
+        salt: String,
+        /// The value itself, in text.
+        verifier: String,
+    },
     /// The machine is being asked to do something to itself.
     Power {
         /// What to do: shutdown, restart, sleep or logoff.
@@ -166,6 +183,14 @@ pub struct Hello {
     pub public_key: Vec<u8>,
     /// The port the sending side listens on for the direct connection.
     pub port: u16,
+    /// The id of the machine that is doing the controlling.
+    ///
+    /// It is only there so that a host which trusts that machine can
+    /// let it in without an access code.
+    pub controller_id: String,
+    /// Whether the access code that comes next is the one this machine
+    /// was given, or the one that belongs to that machine alone.
+    pub trusted: bool,
 }
 
 /// The answer to a hello.
@@ -188,6 +213,11 @@ pub struct HelloAck {
     pub proof: Vec<u8>,
     /// The six digits the two ends show to each other.
     pub verify_code: String,
+    /// Whether the answering side used the entry of a trusted machine.
+    ///
+    /// It says which way in was taken, so that the controlling side
+    /// knows whether the value it has is the one that was asked for.
+    pub trusted: bool,
 }
 
 /// The controller shows the access code.
@@ -195,6 +225,12 @@ pub struct HelloAck {
 pub struct Auth {
     /// The proof that the sending side knows the access code.
     pub proof: Vec<u8>,
+    /// Whether the proof was made with the code that belongs to the
+    /// controlling machine alone.
+    ///
+    /// The host says which one it used, so that a proof made for one
+    /// cannot be taken for a proof of the other.
+    pub trusted: bool,
 }
 
 /// The answer to the access code.
@@ -331,6 +367,8 @@ mod tests {
             device_name: "测试机器".into(),
             public_key: vec![1, 2, 3],
             port: 21116,
+            controller_id: "the-controller".into(),
+            trusted: false,
         });
         let text = serde_json::to_string(&message).expect("the message must be serialisable");
         let back: Message = serde_json::from_str(&text).expect("the message must come back");

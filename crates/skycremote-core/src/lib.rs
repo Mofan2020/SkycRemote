@@ -22,4 +22,4 @@ pub mod transport;
 
 /// The version of the wire protocol.  A peer that speaks a different one
 /// is refused instead of being allowed to misbehave.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;

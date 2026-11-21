@@ -245,7 +245,9 @@ async fn several_pictures_in_a_row_all_arrive() {
 /// control messages arrive, and so do the pictures.
 #[tokio::test]
 async fn a_session_with_the_handshake_still_works() {
-    use skycremote_core::handshake::{controller_handshake, host_handshake, HostIdentity};
+    use skycremote_core::handshake::{
+        controller_handshake, host_handshake, Credential, HostIdentity,
+    };
     use skycremote_core::protocol::Message;
 
     let salt = b"the salt of this device".to_vec();
@@ -282,8 +284,14 @@ async fn a_session_with_the_handshake_still_works() {
     let (server_sender, mut server_receiver) = server_side.expect("the host must open");
 
     let (host_task, controller_task) = tokio::join!(
-        host_handshake(&server_sender, &mut server_receiver, &identity),
-        controller_handshake(&client_sender, &mut client_receiver, &identity, "123456"),
+        host_handshake(&server_sender, &mut server_receiver, &identity, &[]),
+        controller_handshake(
+            &client_sender,
+            &mut client_receiver,
+            &identity,
+            "the-controller",
+            Credential::Code("123456".to_string()),
+        ),
     );
     let host = host_task.expect("the host must get in");
     let controller = controller_task.expect("the controller must get in");

@@ -20,10 +20,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use skycremote_core::capture;
-use skycremote_core::handshake::{self, HostIdentity};
+use skycremote_core::handshake::{self, Credential, HostIdentity, TrustedMachine};
 use skycremote_core::protocol::{InputEvent, Message};
 use skycremote_core::session::FrameAssembler;
 use skycremote_core::transport;
+
+use crate::trust::{self, Remembered};
 
 /// What the backend hands back to the window's thread.
 #[derive(Debug)]
@@ -480,6 +482,12 @@ pub struct Backend {
     tracker_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The lines of the log.
     logs: Arc<Mutex<Vec<LogEntry>>>,
+    /// The devices that are remembered.
+    ///
+    /// It sits behind a lock because the task that reads from the
+    /// other end also writes to it: that is where a device that says
+    /// it may be remembered is taken note of.
+    remembered: Arc<Mutex<trust::Store>>,
 }
 
 impl Backend {
@@ -505,6 +513,7 @@ impl Backend {
             host_updates: None,
             tracker_cancel: None,
             logs: Arc::new(Mutex::new(Vec::new())),
+            remembered: Arc::new(Mutex::new(trust::Store::load())),
         }
     }
 
@@ -647,6 +656,11 @@ impl Backend {
             "uploadEnd" => self.upload_end(payload).await,
             "cancelTransfer" => self.cancel_transfer(payload),
             "sendClipboard" => self.send_clipboard(payload).await,
+            "listTrusted" => self.list_trusted(),
+            "requestTrust" => self.request_trust().await,
+            "approveTrust" => self.approve_trust(payload).await,
+            "revokeTrusted" => self.revoke_trusted(payload),
+            "revokeMachine" => self.revoke_machine(payload),
             "terminalExec" => Err(not_done("terminal")),
             other => Err(anyhow!("the command `{other}` is not known")),
         }
@@ -697,13 +711,57 @@ impl Backend {
             salt: Vec::new(),
             verifier: [0u8; 32],
         };
+
+        // A device that was trusted earlier is let in with the value it
+        // gave then, so that nobody has to type the access code.  The
+        // value is looked up by the id of the device.
+        let trusted = payload
+            .get("trusted")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let credential = if trusted {
+            let key = self
+                .remembered
+                .lock()
+                .ok()
+                .and_then(|store| store.key_for(&device_id));
+            let Some(key) = key else {
+                return Err(Refused::refused("notTrusted", "这台电脑没有记住这台设备"));
+            };
+            let Some(salt) = skycremote_core::crypto::base64_decode(&key.salt) else {
+                return Err(anyhow!("记住的值读不出来"));
+            };
+            let Some(bytes) = skycremote_core::crypto::base64_decode(&key.verifier) else {
+                return Err(anyhow!("记住的值读不出来"));
+            };
+            if bytes.len() != 32 {
+                return Err(anyhow!("记住的值读不出来"));
+            }
+            let mut verifier = [0u8; 32];
+            verifier.copy_from_slice(&bytes);
+            Credential::Trusted { salt, verifier }
+        } else {
+            Credential::Code(access_code.clone())
+        };
+
+        let controller_id = self
+            .remembered
+            .lock()
+            .map(|mut store| store.controller_id())
+            .unwrap_or_default();
+
         let (sender, receiver, verify_code) =
-            match Self::open_session(&tracker, &device_id, &access_code, &identity).await {
+            match Self::open_session(&tracker, &device_id, &credential, &controller_id, &identity)
+                .await
+            {
                 Ok(parts) => parts,
                 Err(error) => {
                     let text = error.to_string();
                     if text.contains("口令") {
                         return Err(Refused::refused("accessDenied", "访问口令不对"));
+                    }
+                    if text.contains("没有被信任") {
+                        return Err(Refused::refused("notTrusted", "这台电脑没有记住这台设备"));
                     }
                     return Err(anyhow!("握手没有成功：{text}"));
                 }
@@ -737,7 +795,14 @@ impl Backend {
         // The other end talks back on its own: the list of screens, the
         // pictures, and the messages of the person on the other side.
         // When the line goes down, this task tries to make it again.
-        self.listen(receiver, tracker, device_id.clone(), access_code, identity);
+        self.listen(
+            receiver,
+            tracker,
+            device_id.clone(),
+            credential,
+            controller_id,
+            identity,
+        );
 
         Ok(json!({
             "ok": true,
@@ -757,6 +822,148 @@ impl Backend {
             self.log("info", "挂断了");
         }
         self.emit("disconnect", json!({ "reason": "the user hung up" }));
+        Ok(json!({ "ok": true }))
+    }
+
+    // MARK: - The remembered devices
+
+    /// The devices that are remembered.
+    ///
+    /// Two lists: the devices that gave this machine a value, and the
+    /// machines this machine lets in without an access code.
+    fn list_trusted(&mut self) -> Result<Value> {
+        let store = self
+            .remembered
+            .lock()
+            .map_err(|_| anyhow!("记住的设备读不出来"))?;
+        let keys: Vec<Value> = store
+            .keys()
+            .iter()
+            .map(|entry| json!({ "id": entry.id }))
+            .collect();
+        let machines: Vec<Value> = store
+            .machines()
+            .iter()
+            .map(|entry| json!({ "id": entry.id }))
+            .collect();
+        Ok(json!({ "keys": keys, "machines": machines }))
+    }
+
+    /// Ask the other end to remember this machine.
+    ///
+    /// The other end is asked, not told: the owner of that machine
+    /// decides whether this one may come in without the access code.
+    async fn request_trust(&mut self) -> Result<Value> {
+        // The way out is taken out of the lock before the message
+        // goes, so that the lock is not held while the other end is
+        // waited for.
+        let sender = {
+            let slot = self.session.lock().map_err(|_| anyhow!("会话锁坏了"))?;
+            let session = slot
+                .as_ref()
+                .ok_or_else(|| Refused::refused("noSession", "还没有连上"))?;
+            session.sender.clone()
+        };
+        sender
+            .send_control(bytes::Bytes::from(
+                serde_json::to_string(&Message::TrustRequest)
+                    .map_err(|error| anyhow!("消息写不出来：{error}"))?,
+            ))
+            .await
+            .map_err(|error| anyhow!("消息发不出去：{error}"))?;
+        self.log("info", "已经问过对面：能不能记住这台设备");
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Say yes to the machine that asked to be remembered.
+    ///
+    /// The value is made here and handed over on the line of the
+    /// session, which is already encrypted.
+    async fn approve_trust(&mut self, payload: &Value) -> Result<Value> {
+        let controller_id = payload
+            .get("controllerId")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if controller_id.is_empty() {
+            return Err(anyhow!("不知道是哪台设备"));
+        }
+        let updates = self
+            .host_updates
+            .clone()
+            .ok_or_else(|| Refused::refused("notSharing", "这台电脑现在没有在共享"))?;
+        if !updates.grant_trust(&controller_id) {
+            return Err(anyhow!("共享已经停了"));
+        }
+        self.log("info", format!("记住了设备 {controller_id}"));
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Forget the value a device gave.
+    fn revoke_trusted(&mut self, payload: &Value) -> Result<Value> {
+        let id = payload
+            .get("deviceId")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            return Err(anyhow!("不知道是哪台设备"));
+        }
+        let mut store = self
+            .remembered
+            .lock()
+            .map_err(|_| anyhow!("记住的设备读不出来"))?;
+        store.forget_key(&id);
+        store
+            .save()
+            .map_err(|error| anyhow!("记住的设备存不下来：{error}"))?;
+        self.log("info", format!("不再记住设备 {id}"));
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Forget a machine that was let in without an access code.
+    fn revoke_machine(&mut self, payload: &Value) -> Result<Value> {
+        let id = payload
+            .get("controllerId")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            return Err(anyhow!("不知道是哪台设备"));
+        }
+        let mut store = self
+            .remembered
+            .lock()
+            .map_err(|_| anyhow!("记住的设备读不出来"))?;
+        store.forget_machine(&id);
+        let trusted = store
+            .machines()
+            .iter()
+            .map(|entry| TrustedMachine {
+                controller_id: entry.id.clone(),
+                salt: skycremote_core::crypto::base64_decode(&entry.salt).unwrap_or_default(),
+                verifier: {
+                    let bytes =
+                        skycremote_core::crypto::base64_decode(&entry.verifier).unwrap_or_default();
+                    let mut verifier = [0u8; 32];
+                    if bytes.len() == 32 {
+                        verifier.copy_from_slice(&bytes);
+                    }
+                    verifier
+                },
+            })
+            .collect();
+        store
+            .save()
+            .map_err(|error| anyhow!("记住的设备存不下来：{error}"))?;
+        drop(store);
+        if let Some(updates) = self.host_updates.clone() {
+            updates.set_trusted(trusted);
+        }
+        self.log("info", format!("不再让设备 {id} 免口令进来"));
         Ok(json!({ "ok": true }))
     }
 
@@ -817,6 +1024,7 @@ impl Backend {
             tokio::sync::mpsc::unbounded_channel::<skycremote_core::host::HostEvent>();
         let out = self.out.clone();
         let logs = Arc::clone(&self.logs);
+        let remembered = Arc::clone(&self.remembered);
         tokio::spawn(async move {
             while let Some(event) = events_rx.recv().await {
                 let payload = match event {
@@ -857,6 +1065,40 @@ impl Backend {
                     skycremote_core::host::HostEvent::Warning { message } => {
                         log_to(&out, &logs, "warning", message.clone());
                         json!({ "state": "warning", "message": message })
+                    }
+                    skycremote_core::host::HostEvent::TrustRequested {
+                        controller_id,
+                        controller_name,
+                    } => {
+                        log_to(
+                            &out,
+                            &logs,
+                            "info",
+                            format!("设备 {controller_name} 想被记住"),
+                        );
+                        json!({
+                            "state": "trustRequest",
+                            "controllerId": controller_id,
+                            "controllerName": controller_name,
+                        })
+                    }
+                    skycremote_core::host::HostEvent::TrustGranted {
+                        controller_id,
+                        salt,
+                        verifier,
+                    } => {
+                        // The machine that was let in is written down,
+                        // so that it is let in again next time.
+                        if let Ok(mut store) = remembered.lock() {
+                            store.remember_machine(Remembered {
+                                id: controller_id.clone(),
+                                salt: skycremote_core::crypto::base64_encode(&salt),
+                                verifier: skycremote_core::crypto::base64_encode(&verifier),
+                            });
+                            let _ = store.save();
+                        }
+                        log_to(&out, &logs, "info", format!("记住了设备 {controller_id}"));
+                        json!({ "state": "trusted", "controllerId": controller_id })
                     }
                 };
                 emit_to(&out, "host", payload);
@@ -901,7 +1143,8 @@ impl Backend {
         receiver: transport::Receiver,
         tracker: String,
         device_id: String,
-        access_code: String,
+        credential: Credential,
+        controller_id: String,
         identity: HostIdentity,
     ) {
         let out = self.out.clone();
@@ -914,10 +1157,13 @@ impl Backend {
             .unwrap_or_else(|_| tokio_util::sync::CancellationToken::new());
         let downloads: Arc<Mutex<HashMap<u64, IncomingFile>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let remembered = Arc::clone(&self.remembered);
         tokio::spawn(async move {
             let mut receiver = receiver;
             loop {
-                let closed = Self::read_session(&mut receiver, &out, &downloads).await;
+                let closed =
+                    Self::read_session(&mut receiver, &out, &downloads, &device_id, &remembered)
+                        .await;
                 if cancel.is_cancelled() {
                     // The person hung up on purpose.  Nothing is done.
                     return;
@@ -953,7 +1199,15 @@ impl Backend {
                         _ = cancel.cancelled() => return,
                         _ = tokio::time::sleep(wait) => {}
                     }
-                    match Self::open_session(&tracker, &device_id, &access_code, &identity).await {
+                    match Self::open_session(
+                        &tracker,
+                        &device_id,
+                        &credential,
+                        &controller_id,
+                        &identity,
+                    )
+                    .await
+                    {
                         Ok((sender, new_receiver, verify_code)) => {
                             if let Ok(mut slot) = session.lock() {
                                 // The old connection is closed before it
@@ -1000,6 +1254,8 @@ impl Backend {
         receiver: &mut transport::Receiver,
         out: &ChannelSender<Out>,
         downloads: &Arc<Mutex<HashMap<u64, IncomingFile>>>,
+        device_id: &str,
+        remembered: &Arc<Mutex<trust::Store>>,
     ) -> bool {
         let mut assembler = FrameAssembler::new();
         loop {
@@ -1040,6 +1296,35 @@ impl Backend {
                         }
                         Message::PrivacyScreen { enabled } => {
                             emit_to(out, "privacy", json!({ "enabled": enabled }));
+                        }
+                        Message::TrustRequest => {
+                            // The other end wants to be remembered, so
+                            // that it does not have to say the access
+                            // code next time.  The owner of this machine
+                            // decides, so the window is asked.
+                            emit_to(out, "trustRequest", json!({ "deviceId": device_id }));
+                        }
+                        Message::TrustGrant { salt, verifier, .. } => {
+                            // The other end says this machine may come
+                            // in without the access code from now on.
+                            // The value is put by, so that the next
+                            // time it is not asked for.
+                            let saved = {
+                                let mut store = match remembered.lock() {
+                                    Ok(store) => store,
+                                    Err(_) => return true,
+                                };
+                                store.remember_key(Remembered {
+                                    id: device_id.to_string(),
+                                    salt: salt.clone(),
+                                    verifier: verifier.clone(),
+                                });
+                                let _ = store.save();
+                                true
+                            };
+                            if saved {
+                                emit_to(out, "trusted", json!({ "deviceId": device_id }));
+                            }
                         }
                         Message::FileList {
                             token,
@@ -1197,13 +1482,22 @@ impl Backend {
     async fn open_session(
         tracker: &str,
         device_id: &str,
-        access_code: &str,
+        credential: &Credential,
+        controller_id: &str,
         identity: &HostIdentity,
     ) -> Result<(transport::Sender, transport::Receiver, String)> {
         let (sender, mut receiver) = transport::connect_direct(tracker, device_id)
             .await
             .map_err(|error| anyhow!("连不上 {device_id}：{error}"))?;
-        match handshake::controller_handshake(&sender, &mut receiver, identity, access_code).await {
+        match handshake::controller_handshake(
+            &sender,
+            &mut receiver,
+            identity,
+            controller_id,
+            credential.clone(),
+        )
+        .await
+        {
             Ok(session) => Ok((sender, receiver, session.verify_code)),
             Err(error) => {
                 sender.close();
@@ -1596,6 +1890,30 @@ impl Backend {
 
     /// The share, with the settings as they are now.
     fn host_options(&self) -> skycremote_core::host::HostOptions {
+        let trusted = self
+            .remembered
+            .lock()
+            .map(|store| {
+                store
+                    .machines()
+                    .iter()
+                    .map(|entry| TrustedMachine {
+                        controller_id: entry.id.clone(),
+                        salt: skycremote_core::crypto::base64_decode(&entry.salt)
+                            .unwrap_or_default(),
+                        verifier: {
+                            let bytes = skycremote_core::crypto::base64_decode(&entry.verifier)
+                                .unwrap_or_default();
+                            let mut verifier = [0u8; 32];
+                            if bytes.len() == 32 {
+                                verifier.copy_from_slice(&bytes);
+                            }
+                            verifier
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         skycremote_core::host::HostOptions {
             tracker: self.settings.tracker(),
             device_id: self.settings.device_id(),
@@ -1605,6 +1923,7 @@ impl Backend {
             bitrate_bps: self.settings.bitrate_mbps().saturating_mul(1_000_000),
             salt: Vec::new(),
             verifier: [0u8; 32],
+            trusted,
         }
     }
 

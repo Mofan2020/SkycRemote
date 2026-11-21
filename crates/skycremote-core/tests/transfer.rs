@@ -7,7 +7,7 @@
 //! The files that are used live in a folder of their own, so that the
 //! files of the machine running the test are never touched.
 
-use skycremote_core::handshake::{controller_handshake, host_handshake, HostIdentity};
+use skycremote_core::handshake::{controller_handshake, host_handshake, Credential, HostIdentity};
 use skycremote_core::protocol::Message;
 use skycremote_core::transfer;
 use skycremote_core::transport::{accept, connect, listen, open, Incoming, Side};
@@ -58,8 +58,14 @@ async fn a_session() -> (
     let (server_sender, mut server_receiver) = server_side.expect("the host must open");
 
     let (host_task, controller_task) = tokio::join!(
-        host_handshake(&server_sender, &mut server_receiver, &identity),
-        controller_handshake(&client_sender, &mut client_receiver, &identity, "123456"),
+        host_handshake(&server_sender, &mut server_receiver, &identity, &[]),
+        controller_handshake(
+            &client_sender,
+            &mut client_receiver,
+            &identity,
+            "the-controller",
+            Credential::Code("123456".to_string()),
+        ),
     );
     host_task.expect("the host must get in");
     controller_task.expect("the controller must get in");

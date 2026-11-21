@@ -91,7 +91,13 @@
     // The last clipboard text that came from the other side.
     clipboard: '',
     // The power action waiting to be confirmed.
-    powerAction: null
+    powerAction: null,
+    // The devices this computer may enter without an access code.
+    trustedKeys: {},
+    // The machines that may enter this computer without an access code.
+    trustedMachines: {},
+    // The machine that asked to be remembered, waiting to be answered.
+    trustRequest: null
   };
 
   function clone(obj) {
@@ -266,6 +272,7 @@
     if (e.key !== 'Escape') return;
     if (openMenu) { closeMenus(); return; }
     if (!$('#access-modal').hidden) { closeAccessDialog(null); return; }
+    if (!$('#trust-modal').hidden) { closeTrustDialog(); return; }
     if (!$('#power-dialog').hidden) { closePowerDialog(); return; }
     if (!$('#clipboard-panel').hidden) { closeClipboard(); return; }
     if (!$('#files-panel').hidden) { closeFiles(); return; }
@@ -342,6 +349,7 @@
     $('#settings-device-id').value = s.deviceId || '';
     $('#settings-device-name').value = s.deviceName || '';
     renderSavedCodes();
+    renderTrustedLists();
     renderAutostart();
   }
 
@@ -430,6 +438,96 @@
 
       host.appendChild(row);
     });
+  }
+
+  /* ==================================================================
+   * The remembered devices
+   * ================================================================== */
+
+  /**
+   * The devices that are remembered, one row each.
+   *
+   * Two lists: the devices this computer may enter without a code,
+   * and the machines that may enter this computer without a code.
+   */
+  function renderTrustedLists() {
+    var hosts = $('#trusted-keys-list');
+    if (hosts) {
+      hosts.innerHTML = '';
+      var ids = Object.keys(state.trustedKeys);
+      var empty = $('#trusted-keys-empty');
+      if (empty) empty.hidden = ids.length > 0;
+      ids.forEach(function (id) {
+        var row = el('div', 'saved-code-row');
+        row.appendChild(el('span', 'saved-code-id mono', id));
+
+        var del = el('button', 'icon-btn icon-btn-sm');
+        del.type = 'button';
+        del.innerHTML = icons.icon('trash', { size: 15 });
+        del.setAttribute('title', t('common.remove'));
+        del.addEventListener('click', function () {
+          bridge.call('revokeTrusted', { deviceId: id }).then(function () {
+            delete state.trustedKeys[id];
+            renderTrustedLists();
+            toast(t('trust.revoked'), 'info');
+          }).catch(function (error) {
+            toast(errorMessage(error), 'error');
+          });
+        });
+        row.appendChild(del);
+        hosts.appendChild(row);
+      });
+    }
+
+    var machines = $('#trusted-machines-list');
+    if (machines) {
+      machines.innerHTML = '';
+      var ids2 = Object.keys(state.trustedMachines);
+      var empty2 = $('#trusted-machines-empty');
+      if (empty2) empty2.hidden = ids2.length > 0;
+      ids2.forEach(function (id) {
+        var row = el('div', 'saved-code-row');
+        row.appendChild(el('span', 'saved-code-id mono', id));
+
+        var del = el('button', 'icon-btn icon-btn-sm');
+        del.type = 'button';
+        del.innerHTML = icons.icon('trash', { size: 15 });
+        del.setAttribute('title', t('common.remove'));
+        del.addEventListener('click', function () {
+          bridge.call('revokeMachine', { controllerId: id }).then(function () {
+            delete state.trustedMachines[id];
+            renderTrustedLists();
+            toast(t('trust.revoked'), 'info');
+          }).catch(function (error) {
+            toast(errorMessage(error), 'error');
+          });
+        });
+        row.appendChild(del);
+        machines.appendChild(row);
+      });
+    }
+
+    var row = $('#my-trusted-row');
+    if (row) row.hidden = Object.keys(state.trustedMachines).length === 0;
+  }
+
+  /**
+   * Ask the backend what is remembered.
+   */
+  function loadTrusted() {
+    bridge.call('listTrusted').then(function (result) {
+      var keys = {};
+      var machines = {};
+      ((result && result.keys) || []).forEach(function (entry) {
+        if (entry && entry.id) keys[entry.id] = true;
+      });
+      ((result && result.machines) || []).forEach(function (entry) {
+        if (entry && entry.id) machines[entry.id] = true;
+      });
+      state.trustedKeys = keys;
+      state.trustedMachines = machines;
+      renderTrustedLists();
+    }).catch(function () { /* nothing remembered, or no backend */ });
   }
 
   /* ==================================================================
@@ -716,6 +814,13 @@
       return;
     }
 
+    // A device that was remembered is entered straight away: there is
+    // no code to type.
+    if (state.trustedKeys[id]) {
+      connectTo(id, '', true);
+      return;
+    }
+
     var saved = state.settings.savedCodes ? state.settings.savedCodes[id] : null;
     if (saved) {
       connectTo(id, saved);
@@ -734,7 +839,7 @@
     });
   }
 
-  function connectTo(deviceId, accessCode) {
+  function connectTo(deviceId, accessCode, trusted) {
     if (state.connecting) return;
     state.connecting = true;
     setConnectionStatus('connecting');
@@ -742,7 +847,11 @@
     var button = $('#device-connect-btn');
     if (button) button.disabled = true;
 
-    bridge.call('connect', { deviceId: deviceId, accessCode: accessCode || '' }).then(function () {
+    bridge.call('connect', {
+      deviceId: deviceId,
+      accessCode: accessCode || '',
+      trusted: !!trusted
+    }).then(function () {
       state.connecting = false;
       if (button) button.disabled = false;
       enterRemoteView(deviceId);
@@ -753,6 +862,22 @@
       var code = error && error.code;
       if (code === 'accessDenied') toast(t('access.wrong'), 'error');
       else if (code === 'noAccessCode') toast(t('access.missing'), 'error');
+      else if (code === 'notTrusted') {
+        // The other side does not remember this computer any more, so
+        // the code is asked for again.
+        delete state.trustedKeys[deviceId];
+        renderTrustedLists();
+        toast(t('trust.notRemembered'), 'warning');
+        openAccessDialog(deviceId).then(function (answer) {
+          if (!answer) return;
+          if (answer.remember && answer.code) {
+            state.settings.savedCodes[deviceId] = answer.code;
+            persistSettings();
+            renderSavedCodes();
+          }
+          connectTo(deviceId, answer.code);
+        });
+      }
       else toast(errorMessage(error), 'error');
     });
   }
@@ -1483,6 +1608,49 @@
     show($('#power-dialog'));
   }
 
+  function closeTrustDialog() {
+    hide($('#trust-modal'));
+    state.trustRequest = null;
+  }
+
+  /**
+   * The other side wants to be remembered.  The owner of this machine
+   * decides, so it is asked here.
+   */
+  function showTrustDialog(payload) {
+    state.trustRequest = payload || {};
+    var name = state.trustRequest.controllerName || state.trustRequest.controllerId || '';
+    setText($('#trust-title'), t('trust.title'));
+    setText($('#trust-body'), t('trust.body').replace('{name}', name));
+    show($('#trust-modal'));
+  }
+
+  /**
+   * Say yes: the machine is given a value and told about it.
+   */
+  function approveTrust() {
+    var request = state.trustRequest;
+    if (!request) return;
+    bridge.call('approveTrust', { controllerId: request.controllerId || '' }).then(function () {
+      closeTrustDialog();
+      toast(t('trust.approved'), 'success');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
+  /**
+   * Ask the other side to remember this computer, so that the access
+   * code is not asked for again.
+   */
+  function requestTrust() {
+    bridge.call('requestTrust').then(function () {
+      toast(t('trust.requested'), 'info');
+    }).catch(function (error) {
+      toast(errorMessage(error), 'error');
+    });
+  }
+
   function closePowerDialog() {
     hide($('#power-dialog'));
     state.powerAction = null;
@@ -1775,6 +1943,14 @@
       else toast(t('toast.hostStarted'), 'success');
     } else if (hostState === 'stopped') toast(t('toast.hostStopped'), 'info');
     else if (hostState === 'warning') toast(payload.message || t('toast.hostWarning'), 'warning');
+
+    if (hostState === 'trustRequest') {
+      // The other side wants to be remembered.  The owner of this
+      // machine decides, so it is asked here.
+      showTrustDialog(payload);
+    } else if (hostState === 'trusted') {
+      loadTrusted();
+    }
   }
 
   function handleSettingsEvent(payload) {
@@ -1848,6 +2024,13 @@
         break;
       case 'privacy':
         handlePrivacyEvent(payload);
+        break;
+      case 'trustRequest':
+        showTrustDialog(payload);
+        break;
+      case 'trusted':
+        toast(t('trust.granted'), 'success');
+        loadTrusted();
         break;
       case 'toast':
         if (payload && payload.message) toast(payload.message, payload.kind || 'info');
@@ -1930,6 +2113,9 @@
     bind($('#share-toggle'), 'click', toggleShare);
     bind($('#my-privacy-toggle'), 'click', toggleHostPrivacy);
     bind($('#settings-autostart'), 'click', toggleAutostart);
+    bind($('#btn-trust'), 'click', requestTrust);
+    bind($('#trust-confirm'), 'click', approveTrust);
+    bind($('#trust-cancel'), 'click', closeTrustDialog);
     bind($('#my-copy-id'), 'click', function () {
       copyText(state.settings.deviceId);
     });
@@ -2187,6 +2373,8 @@
 
     renderMyDevice();
     renderDevices();
+    renderTrustedLists();
+    loadTrusted();
     renderVerify();
     renderPrivacy();
     renderFiles();

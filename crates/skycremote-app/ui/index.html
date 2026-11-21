@@ -122,6 +122,13 @@
           <p class="kv-hint" data-i18n="home.myDevice.privacyHint">开着的时候画面不再发出去，旁边有人也看不到</p>
         </div>
 
+        <div class="kv" id="my-trusted-row" hidden>
+          <span class="kv-label" data-i18n="home.myDevice.trusted">免口令进来的设备</span>
+          <div class="saved-codes" id="trusted-machines-list"></div>
+          <p class="kv-hint" id="trusted-machines-empty" data-i18n="home.myDevice.trustedEmpty">还没有设备被记住</p>
+          <p class="kv-hint" data-i18n="home.myDevice.trustedHint">被记住的设备连进来时不用输访问口令</p>
+        </div>
+
         <footer class="card-foot">
           <button id="share-toggle" class="btn btn-primary" type="button">
             <span class="icon" data-icon="play"></span>
@@ -311,6 +318,9 @@
               <span class="icon" data-icon="more-horizontal"></span>
             </button>
             <div id="more-menu" class="menu" role="menu" hidden>
+              <button class="menu-item" id="btn-trust" type="button" role="menuitem">
+                <span class="icon" data-icon="key"></span><span data-i18n="remote.toolbar.trust">记住这台电脑</span>
+              </button>
               <button class="menu-item" id="btn-terminal" type="button" role="menuitem">
                 <span class="icon" data-icon="terminal"></span><span data-i18n="remote.toolbar.terminal">终端</span>
               </button>
@@ -467,6 +477,12 @@
           <p class="set-hint" id="saved-codes-empty" data-i18n="settings.group.savedCodesEmpty">还没有记住任何口令</p>
           <p class="set-hint" data-i18n="settings.group.savedCodesHint">这些口令只存在这台电脑上</p>
         </div>
+        <div class="set-row set-row-stack">
+          <span class="set-label" data-i18n="settings.group.trustedKeys">记住的设备</span>
+          <div class="saved-codes" id="trusted-keys-list"></div>
+          <p class="set-hint" id="trusted-keys-empty" data-i18n="settings.group.trustedKeysEmpty">还没有记住任何设备</p>
+          <p class="set-hint" data-i18n="settings.group.trustedKeysHint">这些设备以后连进来不用再输口令</p>
+        </div>
       </section>
 
       <section class="set-group">
@@ -543,6 +559,26 @@
         <div class="modal-foot-right">
           <button id="access-cancel" class="btn btn-ghost" type="button" data-i18n="access.cancel">取消</button>
           <button id="access-ok" class="btn btn-primary" type="button" data-i18n="access.confirm">连接</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ======================= TRUST ======================= -->
+  <div id="trust-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="trust-title">
+      <header class="modal-head">
+        <h2 id="trust-title" data-i18n="trust.title">记住这台设备</h2>
+      </header>
+
+      <div class="modal-body">
+        <p class="modal-line" id="trust-body"></p>
+      </div>
+
+      <footer class="modal-foot">
+        <div class="modal-foot-right">
+          <button id="trust-cancel" class="btn btn-ghost" type="button" data-i18n="trust.cancel">拒绝</button>
+          <button id="trust-confirm" class="btn btn-primary" type="button" data-i18n="trust.confirm">同意</button>
         </div>
       </footer>
     </div>

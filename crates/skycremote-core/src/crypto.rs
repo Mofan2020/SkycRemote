@@ -312,6 +312,42 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], rounds: u32, out: &mut [u8]) {
     }
 }
 
+/// The bytes of some text, in base64.
+///
+/// It is how the bytes of a salt and of a value travel over the wire
+/// inside a message that is written as text.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The bytes that some text stands for, in base64.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(text.trim())
+        .ok()
+}
+
+/// Make the value that lets a trusted machine in, and the salt it
+/// goes with.
+///
+/// Both are made out of the system randomness and nothing else.  The
+/// value is 32 bytes that nobody else has, and it is not a code that
+/// anybody types: it is handed over once, on the encrypted line of a
+/// session that already proved itself, and from then on it is the
+/// thing the machine proves itself with.
+///
+/// The salt is what goes with it, so that the same value means
+/// something different on every machine it is trusted on.
+pub fn trusted_pair() -> (Vec<u8>, [u8; 32]) {
+    let mut salt = [0u8; 32];
+    let mut verifier = [0u8; 32];
+    getrandom::fill(&mut salt).expect("the system randomness is not available");
+    getrandom::fill(&mut verifier).expect("the system randomness is not available");
+    (salt.to_vec(), verifier)
+}
+
 /// Compare two proofs without telling how much of them matched.
 pub fn proofs_match(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {

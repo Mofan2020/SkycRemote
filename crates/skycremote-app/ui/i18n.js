@@ -56,6 +56,9 @@
       'home.share.sharing': '正在共享',
       'home.share.warning': '共享出了点问题',
       'home.share.stopped': '没有共享',
+      'home.myDevice.trusted': '免口令进来的设备',
+      'home.myDevice.trustedEmpty': '还没有设备被记住',
+      'home.myDevice.trustedHint': '被记住的设备连进来时不用输访问口令',
 
       /* ---------- 远程设备 ---------- */
       'home.remote': '远程设备',
@@ -83,6 +86,17 @@
       'access.failed': '连不上这台设备',
       'access.mockHint': '演示模式：对方的口令是 1234',
 
+      /* ---------- 记住设备 ---------- */
+      'trust.title': '记住这台设备',
+      'trust.body': '{name} 想被记住，以后连进来不用输访问口令。同意吗？',
+      'trust.cancel': '拒绝',
+      'trust.confirm': '同意',
+      'trust.requested': '已经问过对面，能不能记住这台设备',
+      'trust.approved': '记住了这台设备',
+      'trust.granted': '对面记住了这台电脑，以后不用再输口令',
+      'trust.revoked': '不再记住了',
+      'trust.notRemembered': '对面已经不再记住这台电脑，请输入访问口令',
+
       /* ---------- 远程画面 ---------- */
       'remote.back': '返回设备列表',
       'remote.placeholder': '还没有画面',
@@ -100,6 +114,7 @@
       'remote.toolbar.files': '文件传输',
       'remote.toolbar.clipboard': '剪贴板',
       'remote.toolbar.terminal': '终端',
+      'remote.toolbar.trust': '记住这台电脑',
       'remote.toolbar.cloudKeyboard': '云键盘',
       'remote.toolbar.gamepad': '手柄',
       'remote.toolbar.privacy': '隐私屏',
@@ -192,6 +207,9 @@
       'settings.group.savedCodes': '我已记住的设备口令',
       'settings.group.savedCodesEmpty': '还没有记住任何口令',
       'settings.group.savedCodesHint': '这些口令只存在这台电脑上',
+      'settings.group.trustedKeys': '记住的设备',
+      'settings.group.trustedKeysEmpty': '还没有记住任何设备',
+      'settings.group.trustedKeysHint': '这些设备以后连进来不用再输口令',
       'settings.group.about': '关于',
       'settings.about.version': '版本',
       'settings.readOnly': '设备 ID 和显示名称在这里改，别的地方只显示',
@@ -267,6 +285,9 @@
       'home.share.sharing': 'Sharing',
       'home.share.warning': 'Something is wrong',
       'home.share.stopped': 'Not sharing',
+      'home.myDevice.trusted': 'Devices that come in without a code',
+      'home.myDevice.trustedEmpty': 'No device is remembered yet',
+      'home.myDevice.trustedHint': 'A remembered device does not have to type the access code',
 
       /* ---------- other devices ---------- */
       'home.remote': 'Other devices',
@@ -294,6 +315,17 @@
       'access.failed': 'Could not connect to that device',
       'access.mockHint': 'Demo mode: the other side\u2019s code is 1234',
 
+      /* ---------- remembered devices ---------- */
+      'trust.title': 'Remember this device',
+      'trust.body': '{name} wants to be remembered, so that it does not have to type the access code next time. Allow it?',
+      'trust.cancel': 'Refuse',
+      'trust.confirm': 'Allow',
+      'trust.requested': 'Asked the other side whether this device may be remembered',
+      'trust.approved': 'This device is remembered now',
+      'trust.granted': 'The other side remembers this computer, so the code is not asked for again',
+      'trust.revoked': 'No longer remembered',
+      'trust.notRemembered': 'The other side does not remember this computer any more. Type the access code.',
+
       /* ---------- the remote picture ---------- */
       'remote.back': 'Back to the device list',
       'remote.placeholder': 'No picture yet',
@@ -311,6 +343,7 @@
       'remote.toolbar.files': 'File transfer',
       'remote.toolbar.clipboard': 'Clipboard',
       'remote.toolbar.terminal': 'Terminal',
+      'remote.toolbar.trust': 'Remember this computer',
       'remote.toolbar.cloudKeyboard': 'On-screen keyboard',
       'remote.toolbar.gamepad': 'Gamepad',
       'remote.toolbar.privacy': 'Privacy screen',
@@ -403,6 +436,9 @@
       'settings.group.savedCodes': 'Access codes I remember',
       'settings.group.savedCodesEmpty': 'No codes remembered yet',
       'settings.group.savedCodesHint': 'These codes stay on this computer',
+      'settings.group.trustedKeys': 'Remembered devices',
+      'settings.group.trustedKeysEmpty': 'No device is remembered yet',
+      'settings.group.trustedKeysHint': 'These devices come in without an access code',
       'settings.group.about': 'About',
       'settings.about.version': 'Version',
       'settings.readOnly': 'The device ID and display name are changed here; everywhere else they are only shown',

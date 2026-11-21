@@ -57,11 +57,61 @@ pub struct HostIdentity {
     pub verifier: [u8; 32],
 }
 
+/// A machine this device trusts.
+///
+/// The value is what the machine proves itself with.  It is not a code
+/// anybody can guess: it is 32 bytes of randomness that this device
+/// made when it decided to trust that machine, and it was handed over
+/// on the encrypted line of the session at that moment.
+///
+/// The id of the machine is only a name for the entry.  Anybody can say
+/// any name, so the name alone lets nobody in: the value is what does
+/// that.
+#[derive(Debug, Clone)]
+pub struct TrustedMachine {
+    /// The id of the machine that is trusted.
+    pub controller_id: String,
+    /// The salt that goes with the value.
+    ///
+    /// It is different for every trusted machine, so that the same
+    /// value means something different on each of them.
+    pub salt: Vec<u8>,
+    /// The value the machine proves itself with.
+    pub verifier: [u8; 32],
+}
+
+/// How a controlling machine proves that it may come in.
+#[derive(Debug, Clone)]
+pub enum Credential {
+    /// The access code of the device, typed by the person.
+    ///
+    /// It is turned into the value the device kept, the same way it
+    /// always was.
+    Code(String),
+    /// A value the device handed over when it trusted this machine.
+    ///
+    /// With this the machine comes in without anybody typing anything.
+    Trusted {
+        /// The salt that goes with the value.
+        salt: Vec<u8>,
+        /// The value itself.
+        verifier: [u8; 32],
+    },
+}
+
 /// What the handshake agreed on.
 #[derive(Debug, Clone)]
 pub struct Session {
     /// The six digits the two ends show to each other.
     pub verify_code: String,
+    /// The id of the machine that is doing the controlling.
+    ///
+    /// It is empty on the controlling side: there is nobody there.
+    pub controller_id: String,
+    /// The name the controlling machine gives itself.
+    ///
+    /// It is empty on the controlling side.
+    pub controller_name: String,
 }
 
 /// The controller opens a session.
@@ -73,15 +123,22 @@ pub async fn controller_handshake(
     sender: &Sender,
     receiver: &mut Receiver,
     identity: &HostIdentity,
-    access_code: &str,
+    controller_id: &str,
+    credential: Credential,
 ) -> Result<Session> {
     let keys = KeyPair::generate();
+    // Whether this end comes in with a code or with a value it was
+    // given when it was trusted.  The other end has to do the same,
+    // and it says which way it went in the answer.
+    let trusted = matches!(credential, Credential::Trusted { .. });
     let hello = Message::Hello(Hello {
         version: crate::PROTOCOL_VERSION,
         device_id: identity.device_id.clone(),
         device_name: identity.device_name.clone(),
         public_key: keys.public_bytes().to_vec(),
         port: identity.port,
+        controller_id: controller_id.to_string(),
+        trusted,
     });
     send(sender, &hello).await?;
 
@@ -101,6 +158,15 @@ pub async fn controller_handshake(
         return Err(anyhow!("{}", ack.reason));
     }
 
+    // The other end has to have taken the same way in.  If it did not,
+    // the value this end holds is not the one the other end is
+    // checking, and the session would stop a moment later anyway.
+    if ack.trusted != trusted {
+        return Err(anyhow!(
+            "the other end did not take the way in that was offered"
+        ));
+    }
+
     // The shared secret only the two ends know.  Somebody in the
     // middle can put their own key in place of the host's, but then
     // the secret is not the same on both sides and the proof fails.
@@ -108,8 +174,22 @@ pub async fn controller_handshake(
         .shared_secret(&ack.public_key)
         .map_err(|err| anyhow!("the other end sent a bad key: {err}"))?;
 
-    // The access code is turned into the same value the host kept.
-    let verifier = crypto::code_verifier(&ack.salt, access_code);
+    // The value that proves this end may come in.
+    //
+    // With a code, the value is the code turned into something, with
+    // the salt that came back.  With a value that was given when this
+    // machine was trusted, the value is the one that was given: the
+    // salt has to be the same as the one it was given with, or the
+    // value means something else here and there.
+    let verifier = match &credential {
+        Credential::Code(code) => crypto::code_verifier(&ack.salt, code),
+        Credential::Trusted { salt, verifier } => {
+            if ack.salt != *salt {
+                return Err(anyhow!("the other end changed the value of this machine"));
+            }
+            *verifier
+        }
+    };
 
     // The host's proof.  If it does not match, then either the code is
     // wrong or somebody in the middle is pretending to be the host.
@@ -131,6 +211,7 @@ pub async fn controller_handshake(
         sender,
         &Message::Auth(Auth {
             proof: proof.to_vec(),
+            trusted,
         }),
     )
     .await?;
@@ -157,6 +238,8 @@ pub async fn controller_handshake(
 
     Ok(Session {
         verify_code: session.verify_code,
+        controller_id: String::new(),
+        controller_name: String::new(),
     })
 }
 
@@ -169,6 +252,7 @@ pub async fn host_handshake(
     sender: &Sender,
     receiver: &mut Receiver,
     identity: &HostIdentity,
+    trusted: &[TrustedMachine],
 ) -> Result<Session> {
     let keys = KeyPair::generate();
 
@@ -189,16 +273,51 @@ pub async fn host_handshake(
         .shared_secret(&hello.public_key)
         .map_err(|err| anyhow!("the other end sent a bad key: {err}"))?;
 
+    // A machine this device trusts comes in with the value it was given
+    // when it was trusted.  The entry is looked up by the id of that
+    // machine, and the value and the salt come out of it.  The id is
+    // only a name: the value is what lets the machine in, so anybody
+    // who says the name of a trusted machine without the value gets
+    // nowhere.
+    //
+    // A machine that is not trusted uses the access code of this
+    // device, and the salt of this device.
+    let (salt, verifier) = if hello.trusted {
+        match trusted
+            .iter()
+            .find(|machine| machine.controller_id == hello.controller_id)
+        {
+            Some(machine) => (machine.salt.clone(), machine.verifier),
+            None => {
+                // It says it is trusted but it is not.  The session
+                // does not go on, and the other end is told why so
+                // that it can ask for the access code instead.
+                send(
+                    sender,
+                    &Message::HelloAck(HelloAck {
+                        version: crate::PROTOCOL_VERSION,
+                        public_key: keys.public_bytes().to_vec(),
+                        allowed: false,
+                        reason: "这台电脑没有被信任".to_string(),
+                        salt: Vec::new(),
+                        proof: Vec::new(),
+                        verify_code: String::new(),
+                        trusted: true,
+                    }),
+                )
+                .await?;
+                return Err(anyhow!("这台电脑没有被信任"));
+            }
+        }
+    } else {
+        (identity.salt.clone(), identity.verifier)
+    };
+
     // The host's own proof.  The controller checks it before it sends
     // its own, so that a machine that does not know the code is found
     // out before anything is sent to it.
-    let host_transcript = transcript(
-        &hello.public_key,
-        &keys.public_bytes(),
-        &identity.salt,
-        b"host",
-    );
-    let proof = crypto::access_proof(&shared, &identity.verifier, &host_transcript);
+    let host_transcript = transcript(&hello.public_key, &keys.public_bytes(), &salt, b"host");
+    let proof = crypto::access_proof(&shared, &verifier, &host_transcript);
 
     send(
         sender,
@@ -207,9 +326,10 @@ pub async fn host_handshake(
             public_key: keys.public_bytes().to_vec(),
             allowed: true,
             reason: String::new(),
-            salt: identity.salt.clone(),
+            salt: salt.clone(),
             proof: proof.to_vec(),
             verify_code: String::new(),
+            trusted: hello.trusted,
         }),
     )
     .await?;
@@ -219,13 +339,25 @@ pub async fn host_handshake(
     let Message::Auth(auth) = answer else {
         return Err(anyhow!("the other end did not send the access code"));
     };
+    // The way in has to be the same on both sides.
+    if auth.trusted != hello.trusted {
+        send(
+            sender,
+            &Message::AuthResult(AuthResult {
+                allowed: false,
+                reason: "两边说的不是一回事".to_string(),
+            }),
+        )
+        .await?;
+        return Err(anyhow!("两边说的不是一回事"));
+    }
     let controller_transcript = transcript(
         &hello.public_key,
         &keys.public_bytes(),
-        &identity.salt,
+        &salt,
         b"controller",
     );
-    let expected = crypto::access_proof(&shared, &identity.verifier, &controller_transcript);
+    let expected = crypto::access_proof(&shared, &verifier, &controller_transcript);
     if !crypto::proofs_match(&auth.proof, &expected) {
         // The code is wrong, or somebody in the middle is pretending.
         // Either way this session does not go on.
@@ -249,7 +381,7 @@ pub async fn host_handshake(
     )
     .await?;
 
-    let session = crypto::derive_session(&shared, &identity.salt, &identity.verifier, false)?;
+    let session = crypto::derive_session(&shared, &salt, &verifier, false)?;
     sender.set_ciphers(
         session.control.outgoing.clone(),
         session.video.outgoing.clone(),
@@ -261,6 +393,8 @@ pub async fn host_handshake(
 
     Ok(Session {
         verify_code: session.verify_code,
+        controller_id: hello.controller_id,
+        controller_name: hello.device_name,
     })
 }
 
@@ -408,8 +542,14 @@ mod tests {
         let (server_sender, mut server_receiver) = server_side.expect("the host must open");
 
         let (host_task, controller_task) = tokio::join!(
-            host_handshake(&server_sender, &mut server_receiver, &identity),
-            controller_handshake(&client_sender, &mut client_receiver, &identity, "123456",),
+            host_handshake(&server_sender, &mut server_receiver, &identity, &[]),
+            controller_handshake(
+                &client_sender,
+                &mut client_receiver,
+                &identity,
+                "the-controller",
+                Credential::Code("123456".to_string()),
+            ),
         );
 
         let host = host_task.expect("the host must get in");
@@ -461,8 +601,14 @@ mod tests {
         let (server_sender, mut server_receiver) = server_side.expect("the host must open");
 
         let (host_task, controller_task) = tokio::join!(
-            host_handshake(&server_sender, &mut server_receiver, &identity),
-            controller_handshake(&client_sender, &mut client_receiver, &identity, "654321",),
+            host_handshake(&server_sender, &mut server_receiver, &identity, &[]),
+            controller_handshake(
+                &client_sender,
+                &mut client_receiver,
+                &identity,
+                "the-controller",
+                Credential::Code("654321".to_string()),
+            ),
         );
 
         assert!(
