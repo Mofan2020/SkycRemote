@@ -105,3 +105,30 @@ tag push 触发。`check-version` 先看 tag 上的版本号和三个 crate 写�
 的构建。
 
 `release-notes.md` 就是 release 的正文。
+
+## 输入注入：两个「看着绿、实际打不出字」的坑
+
+这两条都只有真机探针能发现，单元测试 mock 掉 Xlib 之后永远看不到。Xvfb 上
+的探针在 `~/injector-probe`（不在仓库里），做法是选中根窗口的按键事件、把焦点
+钉到根窗口，然后调 `input::inject`，打印客户端处理事件时 `XKeycodeToKeysym`
+读到的键符。
+
+**一、`XChangeKeyboardMapping` 的返回值不是结论。** Xvfb 上它返回 0，键位表
+却真的改了。按返回值判，一台能打字的机器会被判成不能打字，打中文直接报错退出。
+判据只能是写完 `XSync` 之后用 `XGetKeyboardMapping` 读回来比对，读完 `XFree`。
+
+**二、事件到达不等于字符正确。** X 的 `KeyPress` 只带 keycode，客户端必须
+在处理事件的那一刻查键位表才能拿到字符。所以「借用空键位 → 改键符 → 按/松 →
+立刻还原」这个流程打不出字：事件到了，客户端读到的是空键符。借用期间不许还，
+统一在 `Drop` 里还。空键位（keycode 8/9 之类）通常没有对应物理键，整个会话
+留着一个字符基本无害。
+
+探针的判据要落在**字符内容**上（读到的 keysym 是不是 `0x1004e2d`），只看
+「收到几个 KeyPress」会全绿。
+
+## 守卫测试不能假定换行符
+
+读源码做守卫的测试用 `include_str!`，在 Windows runner 上检出后是 CRLF，按
+`"\n}\n"` 找代码块边界会找不到、直接 panic —— 本机是 LF 所以绿的，CI 上红。
+读进来先 `.replace("\r\n", "\n")` 再断言。
+
