@@ -242,6 +242,7 @@ pub fn run(options: Options) -> Result<()> {
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
     // The window keeps a copy of the way out, so that it can tell the
     // page that the window was closed while the program keeps going.
+    #[cfg(not(target_os = "linux"))]
     let window_tx = out_tx.clone();
 
     // The icon in the corner of the screen.  It is made inside the
@@ -398,7 +399,6 @@ pub fn run(options: Options) -> Result<()> {
             #[cfg(target_os = "linux")]
             {
                 *control_flow = ControlFlow::Exit;
-                return;
             }
 
             // Closing the window is not stopping the program: the
@@ -420,7 +420,6 @@ pub fn run(options: Options) -> Result<()> {
                     payload: serde_json::json!({ "state": "hidden" }),
                 });
             }
-            return;
         }
 
         loop {
