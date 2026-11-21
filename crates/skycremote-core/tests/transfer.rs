@@ -111,26 +111,20 @@ fn scratch(name: &str) -> std::path::PathBuf {
     folder
 }
 
-/// Take the folders of the test away when it is over.
-fn clean_up() {
-    let home = std::env::var_os("HOME").expect("there is a home folder");
-    let home = std::path::PathBuf::from(home);
-    let Ok(entries) = std::fs::read_dir(&home) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(".skycremote-test-") {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
+/// Take the folder of the test away when it is over.
+///
+/// Only this test's own folder is taken away: the tests run side by
+/// side, and one of them must not pull the folder out from under
+/// another one.
+fn clean_up(folder: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(folder);
 }
 
 #[tokio::test]
 async fn a_file_listing_goes_over_the_session() {
     let (_client_sender, mut client_receiver, server_sender, _server_receiver) = a_session().await;
 
-    let outbox = scratch("outbox");
+    let outbox = scratch("listing");
     std::fs::write(outbox.join("note.txt"), b"hello there").expect("the file must be written");
 
     transfer::send_listing(&server_sender, 7, &outbox.to_string_lossy()).await;
@@ -142,7 +136,10 @@ async fn a_file_listing_goes_over_the_session() {
             entries,
         } => {
             assert_eq!(token, 7, "the answer must belong to the question");
-            assert!(path.ends_with("outbox"), "the path is {path}");
+            assert!(
+                path.ends_with("listing"),
+                "the path is {path}, and it should point at the folder that was listed"
+            );
             assert_eq!(entries.len(), 1, "there is one file in the folder");
             assert_eq!(entries[0].name, "note.txt");
             assert!(!entries[0].is_dir, "it is a file, not a folder");
@@ -150,14 +147,14 @@ async fn a_file_listing_goes_over_the_session() {
         }
         other => panic!("the wrong answer came back: {other:?}"),
     }
-    clean_up();
+    clean_up(&outbox);
 }
 
 #[tokio::test]
 async fn a_file_is_sent_over_the_session() {
     let (_client_sender, mut client_receiver, server_sender, _server_receiver) = a_session().await;
 
-    let outbox = scratch("outbox");
+    let outbox = scratch("download");
     let content: Vec<u8> = (0..40_000u32).map(|number| (number % 251) as u8).collect();
     std::fs::write(outbox.join("blob.bin"), &content).expect("the file must be written");
 
@@ -199,14 +196,15 @@ async fn a_file_is_sent_over_the_session() {
 
     assert_eq!(size, content.len() as u64, "the size must be told up front");
     assert_eq!(got, content, "not one byte may be lost");
-    clean_up();
+    clean_up(&outbox);
 }
 
 #[tokio::test]
 async fn a_file_that_is_not_there_is_reported() {
     let (_client_sender, mut client_receiver, server_sender, _server_receiver) = a_session().await;
 
-    let missing = scratch("outbox").join("not-there.txt");
+    let folder = scratch("missing");
+    let missing = folder.join("not-there.txt");
     transfer::send_file(&server_sender, 3, &missing.to_string_lossy()).await;
 
     match hear(&mut client_receiver).await {
@@ -216,7 +214,7 @@ async fn a_file_that_is_not_there_is_reported() {
         }
         other => panic!("the wrong message came back: {other:?}"),
     }
-    clean_up();
+    clean_up(&folder);
 }
 
 #[tokio::test]
