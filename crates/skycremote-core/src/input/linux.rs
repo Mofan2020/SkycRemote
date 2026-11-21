@@ -381,6 +381,11 @@ impl LinuxInjector {
     }
 
     /// 换掉一个键位上的键符。
+    ///
+    /// `XChangeKeyboardMapping` 的返回值不能拿来判断成败：Xvfb 上它返回
+    /// 0，键位表却真的被改了。按返回值判会把一个明明能打字的服务器判成
+    /// 不能打字，所以这里不看返回值 —— 改完把键位表读回来，跟写进去的
+    /// 那个键符比一比，比得上才算改成了。
     fn set_keysyms(
         &self,
         keycode: u8,
@@ -389,22 +394,37 @@ impl LinuxInjector {
     ) -> Result<(), InputError> {
         let mut buffer = keysyms.to_vec();
         buffer.resize(per_keycode as usize, 0);
-        let changed = unsafe {
+        unsafe {
             (self.xlib.XChangeKeyboardMapping)(
                 self.display,
                 c_int::from(keycode),
                 per_keycode,
                 buffer.as_mut_ptr(),
                 1,
-            )
+            );
+        }
+        // The change has to reach the server before it is read back and
+        // before the key is pressed.
+        unsafe { (self.xlib.XSync)(self.display, 0) };
+
+        let wanted = keysyms.first().copied().unwrap_or(0);
+        let mut per_keycode_back: c_int = 0;
+        let back = unsafe {
+            (self.xlib.XGetKeyboardMapping)(self.display, keycode, 1, &mut per_keycode_back)
         };
-        if changed == 0 {
+        if back.is_null() || per_keycode_back <= 0 {
             return Err(InputError::Refused(
-                "the X server would not change the keyboard".to_string(),
+                "the X server would not say what the keyboard looks like".to_string(),
             ));
         }
-        // The change has to reach the server before the key is pressed.
-        unsafe { (self.xlib.XSync)(self.display, 0) };
+        let actual = unsafe { *back };
+        unsafe { (self.xlib.XFree)(back as *mut c_void) };
+        if actual != wanted {
+            return Err(InputError::Refused(format!(
+                "the X server did not take the new key: it answers {actual:#x}, \
+                 {wanted:#x} was written"
+            )));
+        }
         Ok(())
     }
 
@@ -683,5 +703,42 @@ mod tests {
         assert_eq!(wheel_steps(3.7), 3);
         assert_eq!(wheel_steps(-3.7), -3);
         assert_eq!(wheel_steps(0.4), 0);
+    }
+
+    #[test]
+    fn the_new_key_is_checked_by_reading_it_back() {
+        // This contract was bitten by a real server: on Xvfb,
+        // XChangeKeyboardMapping answers 0 and still changes the keyboard.
+        // Judging it by that answer turns a machine that can type into one
+        // that says it cannot, so the source is held to the read-back:
+        // the call must not be taken as an answer, the mapping must be read
+        // back, and the read-back must be freed.
+        let source = include_str!("linux.rs");
+        let start = source.find("fn set_keysyms").expect("set_keysyms is here");
+        let rest = &source[start..];
+        let end = rest.find("fn spare_key").expect("spare_key follows it");
+        let body = &rest[..end];
+
+        // One write, and it is not bound to a name: a bare call cannot be
+        // mistaken for a verdict.
+        assert_eq!(
+            body.matches("XChangeKeyboardMapping").count(),
+            1,
+            "the mapping is written exactly once in set_keysyms"
+        );
+        assert!(
+            !body.contains("let changed")
+                && !body.contains("= unsafe {\n            (self.xlib.XChangeKeyboardMapping)"),
+            "the answer of XChangeKeyboardMapping must not be taken for a verdict"
+        );
+        assert!(
+            body.contains("XGetKeyboardMapping"),
+            "the mapping has to be read back to see whether it took"
+        );
+        assert!(body.contains("XFree"), "the map read back has to be freed");
+        assert!(
+            body.contains("actual != wanted"),
+            "the read-back has to be compared with what was written"
+        );
     }
 }
