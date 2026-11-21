@@ -45,13 +45,19 @@ impl Tray {
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&quit);
 
-        let icon = TrayIconBuilder::new()
-            .with_icon_templated(bolt())
+        let mut builder = TrayIconBuilder::new()
+            .with_icon(bolt())
             .with_menu(Box::new(menu))
             .with_tooltip("SkycRemote")
-            .with_menu_on_left_click(false)
-            .build()
-            .ok()?;
+            .with_menu_on_left_click(false);
+        // On macOS the icon in the menu bar has to be a template, or it
+        // is invisible in the dark mode.  The way of saying that only
+        // exists on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.with_icon_templated(bolt());
+        }
+        let icon = builder.build().ok()?;
 
         Some(Tray {
             _icon: icon,
@@ -116,9 +122,9 @@ fn bolt() -> Icon {
             let py = (y as f32 + 0.5) / SIZE as f32;
             if inside(&points, px, py) {
                 let at = ((y * SIZE + x) * 4) as usize;
-                pixels[at] = 0x1d;
-                pixels[at + 1] = 0x1d;
-                pixels[at + 2] = 0x1f;
+                pixels[at] = 0x0a;
+                pixels[at + 1] = 0x6c;
+                pixels[at + 2] = 0xff;
                 pixels[at + 3] = 0xff;
             }
         }
